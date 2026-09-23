@@ -7,18 +7,20 @@ deserve credit for different reasons:
 - **Bundled into the Worker.** This code is compiled into the artifact you
   deploy, so their notices must travel with it.
 - **Not bundled into the Worker.** Installed from npm, but absent from the
-  current Worker artifact. This includes build/test tooling and the MCP SDK;
-  the runtime probe remains unmounted at this checkpoint.
+  current Worker artifact. This includes build/test tooling and the MCP client
+  SDK. The MCP server and core packages are bundled into the Worker.
 
 Bundled into the Worker
 -----------------------
 
 Apache-2.0             1 package
-MIT                    9 packages
+MIT                   11 packages
 
+- @modelcontextprotocol/core 2.0.0 — MIT — https://github.com/modelcontextprotocol/typescript-sdk
+- @modelcontextprotocol/server 2.0.0 — MIT — https://github.com/modelcontextprotocol/typescript-sdk
 - @sveltejs/kit 2.70.3 — MIT — https://github.com/sveltejs/kit
 - clsx 2.1.1 — MIT — https://github.com/lukeed/clsx
-- cookie 0.6.0 — MIT — https://github.com/jshttp/cookie
+- cookie 0.7.2 — MIT — https://github.com/jshttp/cookie
 - date-fns 4.4.0 — MIT — https://github.com/date-fns/date-fns
 - devalue 5.9.4 — MIT — https://github.com/sveltejs/devalue
 - drizzle-orm 0.45.2 — Apache-2.0 — https://github.com/drizzle-team/drizzle-orm
@@ -31,13 +33,12 @@ Not bundled into the Worker
 ---------------------------
 
 Apache-2.0             2 packages
-MIT                    20 packages
+MIT                    19 packages
 MIT OR Apache-2.0      1 package
 
 - @eslint/js 10.0.1 — MIT — https://github.com/eslint/eslint
 - @libsql/client 0.18.0 — MIT — https://github.com/tursodatabase/libsql-client-ts
 - @modelcontextprotocol/client 2.0.0 — MIT — https://github.com/modelcontextprotocol/typescript-sdk
-- @modelcontextprotocol/server 2.0.0 — MIT — https://github.com/modelcontextprotocol/typescript-sdk
 - @playwright/test 1.63.0 — Apache-2.0 — https://github.com/microsoft/playwright
 - @sveltejs/adapter-cloudflare 7.2.9 — MIT — https://github.com/sveltejs/kit
 - @sveltejs/vite-plugin-svelte 7.3.0 — MIT — https://github.com/sveltejs/vite-plugin-svelte
