@@ -133,6 +133,34 @@ function structured(result: { structuredContent?: unknown }) {
 	return result.structuredContent as Record<string, unknown>;
 }
 
+const expectedOutputFields: Record<string, string[]> = {
+	list_connections: ['connections', 'configured', 'appUrl'],
+	list_drafts: ['drafts', 'hasMore'],
+	get_draft: ['draft'],
+	create_draft: ['draft'],
+	update_draft: ['ok'],
+	duplicate_draft: ['draft'],
+	delete_draft: ['ok'],
+	set_draft_variant: ['variant'],
+	delete_draft_variant: ['ok'],
+	validate_post: [
+		'graphemes',
+		'mastodonLength',
+		'bluesky',
+		'mastodon',
+		'linkedin',
+		'threads',
+		'x',
+		'issues'
+	],
+	publish_draft: ['results', 'stopped', 'stoppedError', 'draft'],
+	schedule_draft: ['targets', 'scheduledFor'],
+	list_queue: ['targets', 'hasMore'],
+	cancel_delivery: ['target'],
+	retry_delivery: ['status', 'remotePostId', 'error', 'skipped'],
+	reschedule_delivery: ['ok', 'scheduledFor']
+};
+
 describe('MCP protocol client through the deployed route handler', () => {
 	it('initializes, checks unsupported ping, and exposes the exact catalog and annotations', async () => {
 		const pingRequest = new Request('https://cogsend.example/api/mcp', {
@@ -170,6 +198,17 @@ describe('MCP protocol client through the deployed route handler', () => {
 		expect(client.getServerVersion()).toMatchObject({ name: 'cogsend', version: '1.0.0' });
 		const { tools } = await client.listTools();
 		expect(tools.map((tool) => tool.name)).toEqual(expectedTools);
+		for (const tool of tools) {
+			const outputSchema = tool.outputSchema as {
+				type?: string;
+				properties?: Record<string, unknown>;
+			};
+			expect(outputSchema).toBeDefined();
+			expect(outputSchema.type).toBe('object');
+			expect(Object.keys(outputSchema.properties ?? {}).sort()).toEqual(
+				[...expectedOutputFields[tool.name]].sort()
+			);
+		}
 		const annotationByName = Object.fromEntries(tools.map((tool) => [tool.name, tool.annotations]));
 		const read = {
 			readOnlyHint: true,
