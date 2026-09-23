@@ -247,23 +247,22 @@ const mcpOutputSchemas = {
 		.passthrough(),
 	publish_draft: z
 		.object({
-			results: z
-				.array(
-					z
-						.object({
-							targetId: z.string(),
-							connectionId: z.string(),
-							platform: z.string(),
-							handle: z.string().nullable(),
-							displayName: z.string().nullable(),
-							status: z.string(),
-							permalink: z.string().nullable(),
-							error: z.string().nullable(),
-							skipped: z.boolean(),
-							inFlight: z.boolean().optional()
-						})
-						.passthrough()
-				),
+			results: z.array(
+				z
+					.object({
+						targetId: z.string(),
+						connectionId: z.string(),
+						platform: z.string(),
+						handle: z.string().nullable(),
+						displayName: z.string().nullable(),
+						status: z.string(),
+						permalink: z.string().nullable(),
+						error: z.string().nullable(),
+						skipped: z.boolean(),
+						inFlight: z.boolean().optional()
+					})
+					.passthrough()
+			),
 			stopped: z.boolean().optional(),
 			stoppedError: z.string().optional(),
 			draft: draftSchema.nullable()
@@ -282,9 +281,7 @@ const mcpOutputSchemas = {
 			skipped: z.boolean().optional()
 		})
 		.passthrough(),
-	reschedule_delivery: z
-		.object({ ok: z.literal(true), scheduledFor: dateTime() })
-		.passthrough()
+	reschedule_delivery: z.object({ ok: z.literal(true), scheduledFor: dateTime() }).passthrough()
 } as const;
 
 type ToolSpec = {
