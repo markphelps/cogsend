@@ -33,6 +33,10 @@ function d1(sql: string) {
 	});
 }
 
+/** Rows seeded by the current test, removed after it so later specs (smoke's
+ *  empty Accounts page) see the shared e2e database as they left it. */
+const seeded: Array<{ draftId: string; connId: string }> = [];
+
 /**
  * A draft with one publish target on a seeded (never contacted) connection.
  * `scheduledFor: null` models a target with no stored time (a cancelled one).
@@ -51,6 +55,7 @@ async function seedScheduledDraft(page: Page, body: string, scheduledFor: string
 			`INSERT INTO drafts (id, user_id, title, base_body, status, created_at, updated_at) VALUES ('${draftId}', '${userId}', NULL, '${body}', '${scheduledFor === null ? 'draft' : 'scheduled'}', ${now}, ${now}); ` +
 			`INSERT INTO publish_targets (id, draft_id, connection_id, status, scheduled_for, attempt_count, created_at, updated_at) VALUES ('${randomUUID()}', '${draftId}', '${connId}', '${status}', ${when}, 0, ${now}, ${now})`
 	);
+	seeded.push({ draftId, connId });
 	return { draftId, connId };
 }
 
@@ -85,6 +90,16 @@ async function expectOneHourDefault(page: Page) {
 	await expect(page.getByTestId('schedule-date')).toHaveValue(DEFAULT_DATE);
 	await expect(page.getByTestId('schedule-time')).toHaveValue(DEFAULT_TIME);
 }
+
+test.afterEach(() => {
+	for (const { draftId, connId } of seeded.splice(0)) {
+		d1(
+			`DELETE FROM publish_targets WHERE draft_id='${draftId}'; ` +
+				`DELETE FROM drafts WHERE id='${draftId}'; ` +
+				`DELETE FROM connections WHERE id='${connId}'`
+		);
+	}
+});
 
 test.beforeEach(async ({ page }) => {
 	await page.clock.setFixedTime(NOW);
