@@ -128,6 +128,7 @@
 		scopes?: string[] | null;
 	};
 	let keyActive = $state<KeyMeta | null>(null);
+	let keyScopes = $state<'read' | 'read-write'>('read-write');
 	let keyLoading = $state(true);
 	// The stored key status actually arrived: without it a failed fetch would
 	// render "No active key" and invite a rotation that was never needed.
@@ -465,7 +466,11 @@
 		keyBusy = true;
 		err = null;
 		try {
-			const res = await fetch('/api/key', { method: 'POST' });
+			const res = await fetch('/api/key', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ scopes: keyScopes === 'read' ? ['read'] : ['read', 'write'] })
+			});
 			const payload = await res.json();
 			if (!res.ok) throw new Error(payload.error || 'Could not create key');
 			// The raw key exists only in this response — show it once.
@@ -896,15 +901,26 @@
 		>
 			<h2 class="mb-2 text-[17px] font-extrabold tracking-tight text-stone-900">API access</h2>
 			<p class="mb-6 max-w-md text-[13px] leading-relaxed font-medium text-stone-500">
-				Use this personal API key for scripts, Shortcuts, and cron jobs. It grants full programmatic
-				access to manage your drafts, publish posts, and view your queue. For security, it cannot be
-				used to manage social accounts, change credentials, or generate new API keys. See the
+				Use this personal API key for scripts, Shortcuts, and cron jobs. Choose whether it can only
+				read or also change and publish drafts. For security, it cannot manage social accounts,
+				change credentials, or generate new API keys. See the
 				<a
 					href="/api"
 					class="font-bold text-stone-900 underline underline-offset-2 hover:text-stone-700"
 					>API reference</a
 				> for full details.
 			</p>
+			<fieldset class="mb-5 space-y-2" data-testid="api-key-scopes">
+				<legend class="mb-2 text-[12px] font-bold text-stone-700">New key permissions</legend>
+				<label class="flex cursor-pointer items-start gap-2 text-[13px] text-stone-700">
+					<input type="radio" name="api-key-scopes" value="read" bind:group={keyScopes} />
+					<span><strong>Read-only</strong> — view connections, drafts, and queue.</span>
+				</label>
+				<label class="flex cursor-pointer items-start gap-2 text-[13px] text-stone-700">
+					<input type="radio" name="api-key-scopes" value="read-write" bind:group={keyScopes} />
+					<span><strong>Read + write</strong> — manage drafts and publish. (Default)</span>
+				</label>
+			</fieldset>
 			{#if keyLoading}
 				<p class="text-sm font-medium text-stone-500">Loading…</p>
 			{:else if keyRevealed}
@@ -1535,7 +1551,7 @@
 	body={keyConfirm === 'revoke'
 		? 'Scripts and automations using the current key stop working immediately.'
 		: keyActive
-			? 'The current key stops working immediately. The new key is shown once.'
+			? 'Generating a replacement revokes the previous key immediately. The new key is shown once.'
 			: 'The new key is shown once. Copy it before closing.'}
 	confirmLabel={keyConfirm === 'revoke' ? 'Revoke' : 'Generate'}
 	cancelLabel="Keep"
