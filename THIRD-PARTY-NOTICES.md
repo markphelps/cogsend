@@ -6,17 +6,16 @@ deserve credit for different reasons:
 
 - **Bundled into the Worker.** This code is compiled into the artifact you
   deploy, so their notices must travel with it.
-- **Build and test tooling.** Installed from npm to build and test the
-  project. It is not distributed with the Worker.
+- **Not bundled into the Worker.** Installed from npm, but absent from the
+  current Worker artifact. This includes build/test tooling and the MCP SDK;
+  the runtime probe remains unmounted at this checkpoint.
 
 Bundled into the Worker
 -----------------------
 
 Apache-2.0             1 package
-ISC                    1 package
-MIT                    10 packages
+MIT                    9 packages
 
-- @lucide/svelte 1.45.0 — ISC — https://github.com/lucide-icons/lucide
 - @sveltejs/kit 2.70.3 — MIT — https://github.com/sveltejs/kit
 - clsx 2.1.1 — MIT — https://github.com/lukeed/clsx
 - cookie 0.6.0 — MIT — https://github.com/jshttp/cookie
@@ -25,19 +24,20 @@ MIT                    10 packages
 - drizzle-orm 0.45.2 — Apache-2.0 — https://github.com/drizzle-team/drizzle-orm
 - esm-env 1.2.2 — MIT — https://github.com/benmccann/esm-env
 - set-cookie-parser 3.1.2 — MIT — https://github.com/nfriedly/set-cookie-parser
-- svelte 5.57.0 — MIT — https://github.com/sveltejs/svelte
 - uqr 0.1.3 — MIT — https://github.com/unjs/uqr
 - zod 4.6.2 — MIT — https://github.com/colinhacks/zod
 
-Build and test tooling (not distributed)
------------------------------------------
+Not bundled into the Worker
+---------------------------
 
 Apache-2.0             2 packages
-MIT                    18 packages
+MIT                    20 packages
 MIT OR Apache-2.0      1 package
 
 - @eslint/js 10.0.1 — MIT — https://github.com/eslint/eslint
 - @libsql/client 0.18.0 — MIT — https://github.com/tursodatabase/libsql-client-ts
+- @modelcontextprotocol/client 2.0.0 — MIT — https://github.com/modelcontextprotocol/typescript-sdk
+- @modelcontextprotocol/server 2.0.0 — MIT — https://github.com/modelcontextprotocol/typescript-sdk
 - @playwright/test 1.63.0 — Apache-2.0 — https://github.com/microsoft/playwright
 - @sveltejs/adapter-cloudflare 7.2.9 — MIT — https://github.com/sveltejs/kit
 - @sveltejs/vite-plugin-svelte 7.3.0 — MIT — https://github.com/sveltejs/vite-plugin-svelte
