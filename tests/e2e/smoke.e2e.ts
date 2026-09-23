@@ -594,6 +594,8 @@ test('api key works logged out, stays out of key management', async () => {
 	test.setTimeout(120_000);
 	await page.goto('/settings');
 	await expect(page.getByTestId('api-key-section')).toBeVisible();
+	await expect(page.locator('input[name="api-key-scopes"][value="read-write"]')).toBeChecked();
+	await page.locator('input[name="api-key-scopes"][value="read"]').check();
 	await clickUntilVisible(
 		page,
 		page.getByRole('button', { name: 'Generate API key' }),
@@ -608,11 +610,72 @@ test('api key works logged out, stays out of key management', async () => {
 	await expect(reveal).toBeHidden();
 	await expect(page.getByTestId('api-key-status')).toContainText(rawKey.trim().slice(0, 12));
 
-	// Logged-out Node fetch (no cookies): key reads + writes as the user…
+	// Logged-out Node fetch (no cookies): the read-only key can read but cannot write.
 	const origin = new URL(page.url()).origin;
-	const keyed = { Authorization: `Bearer ${rawKey.trim()}` };
+	let currentKey = rawKey.trim();
+	let keyed = { Authorization: `Bearer ${currentKey}` };
 	const drafts = await fetch(`${origin}/api/drafts`, { headers: keyed });
 	expect(drafts.status).toBe(200);
+	const mcpCall = (
+		key: string,
+		name = 'create_draft',
+		args: Record<string, unknown> = { title: 'Read-only scope check' }
+	) =>
+		fetch(`${origin}/api/mcp`, {
+			method: 'POST',
+			headers: {
+				Authorization: `Bearer ${key}`,
+				'Content-Type': 'application/json',
+				Accept: 'application/json, text/event-stream',
+				'mcp-method': 'tools/call',
+				'mcp-name': name,
+				'mcp-protocol-version': '2026-07-28'
+			},
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				id: 1,
+				method: 'tools/call',
+				params: {
+					name,
+					arguments: args,
+					_meta: {
+						'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+						'io.modelcontextprotocol/clientCapabilities': {}
+					}
+				}
+			})
+		});
+	const readOnlyRead = await mcpCall(currentKey, 'list_drafts', { limit: 1 }).then((response) =>
+		response.json()
+	);
+	expect(readOnlyRead.result.isError).not.toBe(true);
+	expect(readOnlyRead.result.structuredContent.drafts).toEqual(expect.any(Array));
+	const readOnlyWrite = await mcpCall(currentKey).then((response) => response.json());
+	expect(readOnlyWrite.result.isError).toBe(true);
+	expect(readOnlyWrite.result.structuredContent).toMatchObject({ status: 403 });
+
+	// Replace the key with read+write. Replacement must revoke the first key immediately.
+	await page.locator('input[name="api-key-scopes"][value="read-write"]').check();
+	await clickUntilVisible(
+		page,
+		page.getByRole('button', { name: 'Generate replacement' }),
+		page.getByTestId('confirm-dialog-ok')
+	);
+	await page.getByTestId('confirm-dialog-ok').click();
+	await expect(page.getByTestId('api-key-reveal')).toBeVisible({ timeout: 15000 });
+	const replacementKey = (await page.getByTestId('api-key-value').innerText()).trim();
+	expect(replacementKey).toMatch(/^cog_[0-9a-fA-F]{64}$/);
+	await page.getByRole('button', { name: 'I have saved it' }).click();
+	expect(
+		(await fetch(`${origin}/api/drafts`, { headers: { Authorization: `Bearer ${currentKey}` } }))
+			.status
+	).toBe(401);
+	expect((await mcpCall(currentKey)).status).toBe(401);
+	currentKey = replacementKey;
+	keyed = { Authorization: `Bearer ${currentKey}` };
+	const writeAllowed = await mcpCall(currentKey).then((response) => response.json());
+	expect(writeAllowed.result.isError).not.toBe(true);
+	expect(writeAllowed.result.structuredContent.draft.title).toBe('Read-only scope check');
 	// …but cannot touch key management or credentials.
 	expect((await fetch(`${origin}/api/key`, { headers: keyed })).status).toBe(401);
 	expect(
@@ -641,6 +704,7 @@ test('api key works logged out, stays out of key management', async () => {
 	await page.getByTestId('confirm-dialog-ok').click();
 	await expect(page.getByTestId('api-key-status')).toContainText('No active key');
 	expect((await fetch(`${origin}/api/drafts`, { headers: keyed })).status).toBe(401);
+	expect((await mcpCall(currentKey)).status).toBe(401);
 });
 
 test('composer chrome: counts, thread cards and override tabs', async () => {
