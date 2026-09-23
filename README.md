@@ -49,7 +49,8 @@
 - Retryable failures back off on their own — five attempts, then they park in Failed
 - Disconnecting an account keeps its published history and returns waiting drafts
 - Credentials encrypted at rest (AES-256-GCM), with 2FA on the single admin account
-- Personal API key for scripts, Shortcuts and cron jobs (`Settings → API access`)
+- Personal API key for scripts, Shortcuts, cron jobs, and MCP clients (`/api/mcp`),
+  with read-only or read + write access
 - Settings shows the running version, whether the scheduler is ticking, and when a newer release is out
 
 ## Install
@@ -100,7 +101,7 @@ covers release tags and rolling back.
 | [Configuration](docs/configuration.md) | secrets, the instance name, `APP_URL`, keeping your deployment separate from upstream, the login           |
 | [OAuth apps](docs/oauth-apps.md)       | LinkedIn, Threads and X app setup, and what each platform allows                                           |
 | [Scheduling](docs/scheduling.md)       | the cron trigger, the free-plan trigger limit, external pingers, failure emails                            |
-| [API](docs/api.md)                     | personal API keys and worked examples (the full reference is in-app at `/api`)                             |
+| [API](docs/api.md)                     | personal API keys, MCP/Inspector setup, tool scopes, and worked API examples (also in-app at `/api`)       |
 | [Cloudflare Access](docs/access.md)    | putting an extra gate in front of an instance                                                              |
 | [Development](docs/development.md)     | local setup, the checks that must pass, code expectations                                                  |
 
