@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { expect, test, type Page } from '@playwright/test';
 import {
 	E2E_ACCOUNT,
@@ -594,6 +595,22 @@ test('api key works logged out, stays out of key management', async () => {
 	test.setTimeout(120_000);
 	await page.goto('/settings');
 	await expect(page.getByTestId('api-key-section')).toBeVisible();
+	const mcpSetup = page.getByTestId('mcp-setup');
+	await expect(mcpSetup).toBeVisible();
+	const origin = new URL(page.url()).origin;
+	await expect(page.getByTestId('mcp-endpoint')).toHaveText(`${origin}/api/mcp`);
+	await expect(mcpSetup).toContainText('Claude Code');
+	await expect(mcpSetup).toContainText('OpenAI Codex');
+	await expect(mcpSetup).toContainText('Generic Streamable HTTP client');
+	await expect(mcpSetup).toContainText('CF-Access-Client-Id');
+	await expect(mcpSetup.locator('pre').nth(0)).toContainText('Bearer ${COGSEND_API_KEY}');
+	await expect(mcpSetup.locator('pre').nth(1)).toContainText(
+		'bearer_token_env_var = "COGSEND_API_KEY"'
+	);
+	await expect(mcpSetup.locator('pre').nth(1)).toContainText(
+		'default_tools_approval_mode = "prompt"'
+	);
+	await expect(mcpSetup.locator('pre').nth(2)).toContainText('StreamableHTTPClientTransport');
 	await expect(page.locator('input[name="api-key-scopes"][value="read-write"]')).toBeChecked();
 	await page.locator('input[name="api-key-scopes"][value="read"]').check();
 	await clickUntilVisible(
@@ -609,9 +626,28 @@ test('api key works logged out, stays out of key management', async () => {
 	await page.getByRole('button', { name: 'I have saved it' }).click();
 	await expect(reveal).toBeHidden();
 	await expect(page.getByTestId('api-key-status')).toContainText(rawKey.trim().slice(0, 12));
+	// Dismissing the one-time reveal must remove the complete key from rendered markup.
+	expect(await page.content()).not.toContain(rawKey.trim());
+
+	// The official Streamable HTTP client can initialize and call a read tool with this fresh key.
+	const supportedClient = new Client(
+		{ name: 'cogsend-settings-e2e', version: '1.0.0' },
+		{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
+	);
+	const supportedTransport = new StreamableHTTPClientTransport(new URL(`${origin}/api/mcp`), {
+		requestInit: { headers: { Authorization: `Bearer ${rawKey.trim()}` } }
+	});
+	await supportedClient.connect(supportedTransport);
+	const { tools } = await supportedClient.listTools();
+	expect(tools.map((tool) => tool.name)).toContain('list_drafts');
+	const supportedRead = await supportedClient.callTool({
+		name: 'list_drafts',
+		arguments: { limit: 1 }
+	});
+	expect(supportedRead.isError).not.toBe(true);
+	await supportedClient.close();
 
 	// Logged-out Node fetch (no cookies): the read-only key can read but cannot write.
-	const origin = new URL(page.url()).origin;
 	let currentKey = rawKey.trim();
 	let keyed = { Authorization: `Bearer ${currentKey}` };
 	const drafts = await fetch(`${origin}/api/drafts`, { headers: keyed });
@@ -666,6 +702,7 @@ test('api key works logged out, stays out of key management', async () => {
 	const replacementKey = (await page.getByTestId('api-key-value').innerText()).trim();
 	expect(replacementKey).toMatch(/^cog_[0-9a-fA-F]{64}$/);
 	await page.getByRole('button', { name: 'I have saved it' }).click();
+	expect(await page.content()).not.toContain(replacementKey);
 	expect(
 		(await fetch(`${origin}/api/drafts`, { headers: { Authorization: `Bearer ${currentKey}` } }))
 			.status

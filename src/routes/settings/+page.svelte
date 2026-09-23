@@ -138,6 +138,60 @@
 	let keyCopied = $state(false);
 	let keyConfirm: 'rotate' | 'revoke' | null = $state(null);
 	let keyJustRotated = $state(false);
+	let mcpCopied = $state<string | null>(null);
+	const mcpUrl = $derived(tickOrigin ? `${tickOrigin}/api/mcp` : '/api/mcp');
+	const claudeMcpConfig = $derived(
+		JSON.stringify(
+			{
+				mcpServers: {
+					cogsend: {
+						type: 'http',
+						url: mcpUrl,
+						headers: { Authorization: 'Bearer ${COGSEND_API_KEY}' }
+					}
+				}
+			},
+			null,
+			2
+		)
+	);
+	const codexMcpConfig = $derived(
+		[
+			'[mcp_servers.cogsend]',
+			`url = "${mcpUrl}"`,
+			'bearer_token_env_var = "COGSEND_API_KEY"',
+			'default_tools_approval_mode = "prompt"'
+		].join('\n')
+	);
+	const genericMcpExample = $derived(
+		[
+			"import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';",
+			'',
+			'const apiKey = process.env.COGSEND_API_KEY;',
+			"if (!apiKey) throw new Error('Set COGSEND_API_KEY before running this example.');",
+			"const client = new Client({ name: 'my-agent', version: '1.0.0' });",
+			'const transport = new StreamableHTTPClientTransport(',
+			`  new URL('${mcpUrl}'),`,
+			'  { requestInit: { headers: { Authorization: `Bearer ${apiKey}` } } }',
+			');',
+			'await client.connect(transport);',
+			'const { tools } = await client.listTools();',
+			'console.log(tools.map(({ name }) => name));',
+			'await client.close();'
+		].join('\n')
+	);
+	const claudeAccessHeaders = JSON.stringify(
+		{
+			headers: {
+				'CF-Access-Client-Id': '${CF_ACCESS_CLIENT_ID}',
+				'CF-Access-Client-Secret': '${CF_ACCESS_CLIENT_SECRET}'
+			}
+		},
+		null,
+		2
+	);
+	const codexAccessHeaders =
+		'env_http_headers = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }';
 	// The form stays disabled until the first load resolves: applying slow
 	// fetch results over user edits (and then saving them) would silently
 	// reset their choices. `prefsLoaded` separates "the request finished" from
@@ -521,6 +575,15 @@
 		keyJustRotated = false;
 	}
 
+	async function copyMcpExample(name: string, text: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+			mcpCopied = name;
+		} catch {
+			err = 'Could not copy the example — select and copy it instead.';
+		}
+	}
+
 	function keyDate(iso: string | null): string {
 		if (!iso) return 'never';
 		const d = new Date(iso);
@@ -895,7 +958,7 @@
 		</div>
 
 		<div
-			class="rounded-[2rem] border border-stone-200/80 bg-white p-6 shadow-[0_8px_30px_-12px_rgb(28_25_23/0.06)] sm:p-8"
+			class="min-w-0 rounded-[2rem] border border-stone-200/80 bg-white p-6 shadow-[0_8px_30px_-12px_rgb(28_25_23/0.06)] sm:p-8"
 			aria-label="API access"
 			data-testid="api-key-section"
 		>
@@ -918,7 +981,9 @@
 				</label>
 				<label class="flex cursor-pointer items-start gap-2 text-[13px] text-stone-700">
 					<input type="radio" name="api-key-scopes" value="read-write" bind:group={keyScopes} />
-					<span><strong>Read + write</strong> — manage drafts and publish. (Default)</span>
+					<span
+						><strong>Read + write</strong> — manage drafts and publish; includes read. (Default)</span
+					>
 				</label>
 			</fieldset>
 			{#if keyLoading}
@@ -1024,6 +1089,164 @@
 					Generate API key
 				</button>
 			{/if}
+
+			<section class="mt-7 min-w-0 border-t border-stone-200/80 pt-6" data-testid="mcp-setup">
+				<h3 class="text-[15px] font-extrabold tracking-tight text-stone-900">
+					Connect an MCP client
+				</h3>
+				<p class="mt-2 text-[13px] leading-relaxed font-medium text-stone-600">
+					CogSend's stateless Streamable HTTP server lets coding agents work with drafts and
+					publishing. Use an active personal API key; the endpoint does not use your browser
+					session.
+				</p>
+				<div class="mt-4 rounded-xl border border-stone-200/80 bg-stone-50/70 p-4">
+					<p class="text-[11px] font-bold tracking-wide text-stone-500 uppercase">Endpoint</p>
+					<div class="mt-2 flex flex-wrap items-center gap-2">
+						<code
+							class="min-w-0 flex-1 rounded-lg bg-white px-3 py-2 font-mono text-[12px] break-all text-stone-800"
+							data-testid="mcp-endpoint">{mcpUrl}</code
+						>
+						<button
+							type="button"
+							onclick={() => copyMcpExample('url', mcpUrl)}
+							class="rounded-full bg-stone-200 px-4 py-2 text-[11px] font-bold text-stone-700 hover:bg-stone-300"
+						>
+							{mcpCopied === 'url' ? 'Copied' : 'Copy URL'}
+						</button>
+					</div>
+				</div>
+
+				<div class="mt-5 min-w-0 space-y-5">
+					<div>
+						<div class="flex flex-wrap items-center justify-between gap-2">
+							<h4 class="text-[13px] font-extrabold text-stone-800">Claude Code</h4>
+							<button
+								type="button"
+								onclick={() => copyMcpExample('claude', claudeMcpConfig)}
+								class="rounded-full bg-stone-100 px-4 py-2 text-[11px] font-bold text-stone-700 hover:bg-stone-200"
+							>
+								{mcpCopied === 'claude' ? 'Copied' : 'Copy Claude Code config'}
+							</button>
+						</div>
+						<p class="mt-1 text-[12px] leading-relaxed text-stone-600">
+							Add this to <code>.mcp.json</code>. Claude Code expands the environment variable in
+							remote HTTP headers. Set <code>COGSEND_API_KEY</code> securely in the environment before
+							starting Claude Code; never put its value in this file.
+						</p>
+						<pre
+							class="mt-2 overflow-x-auto rounded-xl bg-stone-950 p-4 text-[11px] leading-relaxed text-stone-100"><code
+								>{claudeMcpConfig}</code
+							></pre>
+					</div>
+
+					<div>
+						<div class="flex flex-wrap items-center justify-between gap-2">
+							<h4 class="text-[13px] font-extrabold text-stone-800">OpenAI Codex</h4>
+							<button
+								type="button"
+								onclick={() => copyMcpExample('codex', codexMcpConfig)}
+								class="rounded-full bg-stone-100 px-4 py-2 text-[11px] font-bold text-stone-700 hover:bg-stone-200"
+							>
+								{mcpCopied === 'codex' ? 'Copied' : 'Copy Codex config'}
+							</button>
+						</div>
+						<p class="mt-1 text-[12px] leading-relaxed text-stone-600">
+							Add this to <code>~/.codex/config.toml</code>. Codex reads the bearer value from the
+							named environment variable. The prompt approval mode asks before tool calls.
+						</p>
+						<pre
+							class="mt-2 overflow-x-auto rounded-xl bg-stone-950 p-4 text-[11px] leading-relaxed text-stone-100"><code
+								>{codexMcpConfig}</code
+							></pre>
+					</div>
+
+					<div>
+						<div class="flex flex-wrap items-center justify-between gap-2">
+							<h4 class="text-[13px] font-extrabold text-stone-800">
+								Generic Streamable HTTP client
+							</h4>
+							<button
+								type="button"
+								onclick={() => copyMcpExample('generic', genericMcpExample)}
+								class="rounded-full bg-stone-100 px-4 py-2 text-[11px] font-bold text-stone-700 hover:bg-stone-200"
+							>
+								{mcpCopied === 'generic' ? 'Copied' : 'Copy TypeScript example'}
+							</button>
+						</div>
+						<p class="mt-1 text-[12px] leading-relaxed text-stone-600">
+							A Streamable HTTP MCP client must send <code>Authorization: Bearer</code> on its
+							requests. Install <code>@modelcontextprotocol/client</code> and run this as a Node ESM
+							script. Load <code>COGSEND_API_KEY</code> from your secret manager or process environment.
+						</p>
+						<pre
+							class="mt-2 overflow-x-auto rounded-xl bg-stone-950 p-4 text-[11px] leading-relaxed text-stone-100"><code
+								>{genericMcpExample}</code
+							></pre>
+					</div>
+				</div>
+
+				<div class="mt-5 rounded-xl border border-blue-200/70 bg-blue-50/50 p-4">
+					<h4 class="text-[13px] font-extrabold text-blue-950">
+						If Cloudflare Access protects this endpoint
+					</h4>
+					<p class="mt-1 text-[12px] leading-relaxed text-blue-900">
+						When an Access Service Auth policy protects <code>/api/mcp</code>, send both
+						<code>CF-Access-Client-Id</code> and <code>CF-Access-Client-Secret</code> as well as the CogSend
+						bearer key. These are separate credentials. Keep all three values in a local secret manager
+						or environment variables. Add these optional settings only when your Access policy requires
+						them:
+					</p>
+					<div class="mt-3 grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
+						<div>
+							<p class="text-[11px] font-bold text-blue-950">
+								Claude Code: merge into <code>headers</code>
+							</p>
+							<pre
+								class="mt-2 overflow-x-auto rounded-lg bg-white p-3 text-[10px] leading-relaxed text-stone-800"><code
+									>{claudeAccessHeaders}</code
+								></pre>
+						</div>
+						<div>
+							<p class="text-[11px] font-bold text-blue-950">Codex: add to the server table</p>
+							<pre
+								class="mt-2 overflow-x-auto rounded-lg bg-white p-3 text-[10px] leading-relaxed text-stone-800"><code
+									>{codexAccessHeaders}</code
+								></pre>
+						</div>
+					</div>
+					<p class="mt-3 text-[12px] leading-relaxed text-blue-900">
+						If your client cannot send custom headers, choose an Access policy deliberately: use a
+						client that supports Service Auth, or consider a narrowly scoped bypass for <code
+							>/api/mcp</code
+						> only if you accept that Access will not authenticate those requests. CogSend's personal
+						key remains required either way. Do not bypass Access for the whole instance.
+					</p>
+				</div>
+
+				<div class="mt-5 rounded-xl border border-amber-200/70 bg-amber-50/60 p-4">
+					<h4 class="text-[13px] font-extrabold text-amber-950">Key and approval safety</h4>
+					<ul class="mt-2 list-disc space-y-1 pl-5 text-[12px] leading-relaxed text-amber-950">
+						<li>
+							Use Read-only unless the agent needs to create, change, or delete drafts; manage
+							deliveries; or publish. Read + write also grants read access.
+						</li>
+						<li>
+							This account has one active key. It is shown once; generating a replacement
+							immediately revokes the old key. Revoke or replace it here if it may have been
+							exposed.
+						</li>
+						<li>
+							Store the key in a secret manager or environment variable. Do not commit it, paste it
+							into prompts, or include it in screenshots or logs.
+						</li>
+						<li>
+							Use a client approval mode that asks before write, destructive, or open-world actions.
+							Review content, destination, and timing before publishing. MCP safety annotations are
+							hints; the server does not enforce client approval.
+						</li>
+					</ul>
+				</div>
+			</section>
 		</div>
 
 		<div
