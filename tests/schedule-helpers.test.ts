@@ -183,6 +183,21 @@ describe('earliestFutureScheduleValue', () => {
 		expect(earliestFutureScheduleValue(targets, now)).toBe(toDatetimeLocalValue(at(14)));
 	});
 
+	it('round-trips a stored ISO instant exactly when confirmed unchanged', () => {
+		const stored = '2026-08-15T14:30:00.000Z';
+		const value = earliestFutureScheduleValue([{ scheduledFor: stored }], now)!;
+		expect(scheduleValueToIso(value, now)).toBe(stored);
+	});
+
+	it('returns null when every stored value is missing or malformed', () => {
+		expect(
+			earliestFutureScheduleValue(
+				[{ scheduledFor: 'not-a-date' }, { scheduledFor: null }, { scheduledFor: {} }, {}],
+				now
+			)
+		).toBeNull();
+	});
+
 	it('returns null when nothing is future', () => {
 		expect(earliestFutureScheduleValue([{ scheduledFor: at(9).toISOString() }], now)).toBeNull();
 		expect(earliestFutureScheduleValue([{ scheduledFor: now.toISOString() }], now)).toBeNull();
