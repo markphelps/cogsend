@@ -22,7 +22,9 @@
 	// retries once with `"crons": []`, prints why, and exits 0. To tick from
 	// somewhere else instead (Settings → Scheduled publishing hands out a token
 	// for /api/internal/tick), set `"crons": []` here yourself.
-	"triggers": { "crons": ["* * * * *"] },
+	"triggers": {
+		"crons": ["* * * * *"]
+	},
 	//
 	// Optional: binding a queue makes the tick hand publishes to a consumer
 	// instead of publishing inline (one publish per message, with retries).
@@ -33,7 +35,10 @@
 	// `redact_query_string` keeps callback `code`/`state` values and media
 	// `exp`/`sig` parameters out of Workers Logs; the invocation log otherwise
 	// records the full request URL.
-	"observability": { "enabled": true, "redact_query_string": true },
+	"observability": {
+		"enabled": true,
+		"redact_query_string": true
+	},
 	// Rate limiting for the two endpoints anybody can call: sign-in and the
 	// authenticator check. Enforced by Cloudflare at the edge (the same
 	// infrastructure as WAF rate-limiting rules), per location, so nothing in
@@ -45,7 +50,10 @@
 		{
 			"name": "AUTH_RATE_LIMITER",
 			"namespace_id": "1001",
-			"simple": { "limit": 20, "period": 60 }
+			"simple": {
+				"limit": 20,
+				"period": 60
+			}
 		}
 	],
 	"d1_databases": [
