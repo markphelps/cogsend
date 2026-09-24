@@ -2,15 +2,21 @@ import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
 	PLATFORM_SETUP,
+	PLATFORM_SECRET_NAMES,
 	SETUP_GUIDE_URL,
 	callbackUri,
 	connectableNames,
 	emptyStateSentence,
 	isOAuthPlatform,
 	joinPlatformNames,
+	missingSecrets,
 	needsSetup,
+	platformConfigured,
+	platformSecretNames,
 	secretsPutCommand,
+	secretsPutCommandFor,
 	setupFor,
+	setupGuideUrl,
 	type PlatformConfigured
 } from '$lib/domain/platform-setup';
 
@@ -62,11 +68,9 @@ describe('platform setup data', () => {
 	});
 
 	it('documents the steps it points at, in the repository', () => {
-		const anchor = SETUP_GUIDE_URL.split('#')[1];
-		expect(anchor).toBeTruthy();
 		expect(SETUP_GUIDE_URL).toContain('/blob/main/docs/oauth-apps.md');
 		const doc = readFileSync('docs/oauth-apps.md', 'utf8');
-		const heading = doc
+		const headings = doc
 			.split('\n')
 			.filter((line) => line.startsWith('#'))
 			.map((line) =>
@@ -75,11 +79,89 @@ describe('platform setup data', () => {
 					.toLowerCase()
 					.replace(/[^a-z0-9 -]/g, '')
 					.replace(/ /g, '-')
-			)
-			.includes(anchor);
-		expect(heading).toBe(true);
+			);
+		expect(headings).toContain(SETUP_GUIDE_URL.split('#')[1]);
+		// Every platform links to its own section, so the dialog's "Full steps"
+		// link lands on the right steps rather than the top of the page.
+		for (const id of ['linkedin', 'threads', 'x'] as const) {
+			const url = setupGuideUrl(id);
+			expect([id, url.startsWith(`${SETUP_GUIDE_URL.split('#')[0]}#`)]).toEqual([id, true]);
+			expect([id, headings.includes(PLATFORM_SETUP[id].docsAnchor)]).toEqual([id, true]);
+			expect([id, url.endsWith(`#${PLATFORM_SETUP[id].docsAnchor}`)]).toEqual([id, true]);
+		}
 	});
 
+	it('sends the reader to the console that issues the credentials', () => {
+		for (const id of ['linkedin', 'threads', 'x'] as const) {
+			const setup = PLATFORM_SETUP[id];
+			// https and a real host: the dialog renders this as a link, so a typo
+			// would be a dead end in the middle of the setup steps.
+			expect([id, new URL(setup.consoleUrl).protocol]).toEqual([id, 'https:']);
+			expect([id, setup.consoleName.length > 0]).toEqual([id, true]);
+			// The field the redirect URI goes in, and the product or use case the
+			// console demands first: the two things people miss.
+			expect([id, setup.redirectField.length > 10]).toEqual([id, true]);
+			expect([id, setup.consoleRequirement.length > 20]).toEqual([id, true]);
+		}
+	});
+
+	it('names exactly the secrets the API reports presence for', () => {
+		expect(PLATFORM_SECRET_NAMES).toEqual([
+			'LINKEDIN_CLIENT_ID',
+			'LINKEDIN_CLIENT_SECRET',
+			'THREADS_APP_ID',
+			'THREADS_APP_SECRET',
+			'X_CLIENT_ID',
+			'X_CLIENT_SECRET'
+		]);
+		expect(platformSecretNames('x')).toEqual(['X_CLIENT_ID', 'X_CLIENT_SECRET']);
+	});
+
+	it('asks only for the secrets a deployment is missing', () => {
+		// The case that used to read "no credentials yet" while one credential
+		// was already uploaded: the command must name the missing half alone.
+		expect(missingSecrets('linkedin', { LINKEDIN_CLIENT_ID: true })).toEqual([
+			'LINKEDIN_CLIENT_SECRET'
+		]);
+		expect(missingSecrets('linkedin', {})).toEqual([
+			'LINKEDIN_CLIENT_ID',
+			'LINKEDIN_CLIENT_SECRET'
+		]);
+		// X's secret is optional, so its absence does not gate the platform, but
+		// it is still offered while nothing is set.
+		expect(missingSecrets('x', { X_CLIENT_ID: true })).toEqual(['X_CLIENT_SECRET']);
+		expect(secretsPutCommandFor(missingSecrets('x', {}))).toBe(
+			'npm run secrets:put X_CLIENT_ID X_CLIENT_SECRET'
+		);
+		expect(secretsPutCommandFor(['THREADS_APP_SECRET'])).toBe(
+			'npm run secrets:put THREADS_APP_SECRET'
+		);
+	});
+
+	it('derives "configured" from the same presence the dialog shows', () => {
+		for (const id of ['linkedin', 'threads', 'x'] as const) {
+			const all = Object.fromEntries(platformSecretNames(id).map((name) => [name, true]));
+			expect([id, platformConfigured(id, all)]).toEqual([id, true]);
+			expect([id, platformConfigured(id, {})]).toEqual([id, false]);
+			for (const name of PLATFORM_SETUP[id].secrets) {
+				expect([id, name, platformConfigured(id, { ...all, [name]: false })]).toEqual([
+					id,
+					name,
+					false
+				]);
+			}
+		}
+		// The chip the dialog renders comes from `needsSetup`, and the missing
+		// list from `missingSecrets`: both have to agree about a platform.
+		const present = { X_CLIENT_ID: true };
+		const configured = {
+			linkedin: platformConfigured('linkedin', present),
+			threads: platformConfigured('threads', present),
+			x: platformConfigured('x', present)
+		};
+		expect(needsSetup('x', configured)).toBe(false);
+		expect(needsSetup('linkedin', configured)).toBe(true);
+	});
 	it('spells out one paste-ready command per platform', () => {
 		expect(secretsPutCommand('linkedin')).toBe(
 			'npm run secrets:put LINKEDIN_CLIENT_ID LINKEDIN_CLIENT_SECRET'

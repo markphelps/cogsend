@@ -20,6 +20,9 @@ export default defineConfig({
 				test: {
 					name: 'server',
 					environment: 'node',
+					// The developer's own Cloudflare profile and token must not reach
+					// a spawned script; see tests/setup-env.ts.
+					setupFiles: ['./tests/setup-env.ts'],
 					include: ['src/**/*.{test,spec}.{js,ts}', 'tests/**/*.{test,spec}.{js,ts}'],
 					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
 				}

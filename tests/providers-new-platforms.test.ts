@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { linkedinPostUrl, linkedinProvider } from '$lib/server/providers/linkedin';
+import {
+	escapeLittleText,
+	linkedinPostUrl,
+	linkedinProvider
+} from '$lib/server/providers/linkedin';
 import {
 	isThreadsPermalink,
 	threadsAuthorizeUrl,
@@ -108,7 +112,8 @@ describe('linkedinProvider.publish', () => {
 		expect(result.remotePostId).toBe('urn:li:share:thread');
 		expect(posts).toHaveLength(1);
 		expect(posts[0].commentary).toBe('first\n\nsecond');
-		expect(posts[0].content).toEqual({ media: { id: 'urn:li:image:IMG1', title: undefined } });
+		expect(posts[0].content).toEqual({ media: { id: 'urn:li:image:IMG1', altText: undefined } });
+		expect((posts[0].content as { media: object }).media).not.toHaveProperty('title');
 	});
 
 	it('refuses more than four combined images', async () => {
@@ -1477,5 +1482,68 @@ describe('threads media fetch retries', () => {
 			})
 		).rejects.toThrow(/Invalid parameter/);
 		expect(attempts).toBe(1);
+	});
+});
+
+describe('linkedin little text and alt text', () => {
+	it('escapes every reserved character but keeps hashtags', () => {
+		expect(escapeLittleText('Launch (beta) today')).toBe('Launch \\(beta\\) today');
+		expect(escapeLittleText('a|b{c}@d[e]<f>*g_h~i\\j')).toBe(
+			'a\\|b\\{c\\}\\@d\\[e\\]\\<f\\>\\*g\\_h\\~i\\\\j'
+		);
+		// `#word` is little's hashtag element: escaping it would kill the tag.
+		expect(escapeLittleText('#launch day and #2026')).toBe('#launch day and #2026');
+		expect(escapeLittleText('Ship it\n#café')).toBe('Ship it\n#café');
+		// A `#` that does not start a word is plain text.
+		expect(escapeLittleText('issue #')).toBe('issue \\#');
+		expect(escapeLittleText('C# and https://x.test/a#b')).toBe('C\\# and https://x.test/a\\#b');
+		expect(escapeLittleText('plain text, nothing reserved.')).toBe('plain text, nothing reserved.');
+	});
+
+	it('sends escaped commentary and per-image alt text', async () => {
+		const posts: Array<{ commentary: string; content: Record<string, unknown> }> = [];
+		let n = 0;
+		const fetchImpl = mockFetch({
+			'/rest/images?action=initializeUpload': async () => {
+				n += 1;
+				return Response.json({
+					value: { uploadUrl: `https://upload.test/img${n}`, image: `urn:li:image:IMG${n}` }
+				});
+			},
+			'upload.test/img': () => new Response('', { status: 201 }),
+			'/rest/posts': async (req) => {
+				posts.push(await req.json());
+				return new Response('{}', {
+					status: 201,
+					headers: { 'x-restli-id': 'urn:li:share:1', 'Content-Type': 'application/json' }
+				});
+			}
+		});
+		const creds = { accessToken: 'tok', personUrn: 'urn:li:person:abc' };
+		const image = (alt?: string) => ({
+			bytes: new Uint8Array([1]),
+			mime: 'image/png',
+			size: 1,
+			alt
+		});
+		await linkedinProvider.publish(
+			{ text: 'One (1) image #tag', media: [image('  A red kite  ')] },
+			creds,
+			undefined,
+			fetchImpl
+		);
+		await linkedinProvider.publish(
+			{ text: 'two', media: [image('first'), image()] },
+			creds,
+			undefined,
+			fetchImpl
+		);
+		expect(posts[0].commentary).toBe('One \\(1\\) image #tag');
+		expect(posts[0].content).toEqual({ media: { id: 'urn:li:image:IMG1', altText: 'A red kite' } });
+		expect(posts[1].content).toEqual({
+			multiImage: {
+				images: [{ id: 'urn:li:image:IMG2', altText: 'first' }, { id: 'urn:li:image:IMG3' }]
+			}
+		});
 	});
 });

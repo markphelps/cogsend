@@ -19,6 +19,12 @@ import { afterEach, describe, expect, it } from 'vitest';
  * too. The value cannot be read back from Cloudflare, and a wrong
  * APP_ENCRYPTION_KEY orphans every stored credential — so what this script
  * uploads is asserted here, by running it with a recording `node` on PATH.
+ *
+ * Two more answers it has to get right: a skip says which line it looked at,
+ * because a value typed after the `=` on a commented example line is the
+ * mistake `.dev.vars.example` invites; and an upload is confirmed against the
+ * Worker's own secret list, because wrangler exiting 0 only says something
+ * accepted the request.
  */
 describe('npm run secrets:put', () => {
 	let dir: string | null = null;
@@ -27,14 +33,27 @@ describe('npm run secrets:put', () => {
 		dir = null;
 	});
 
-	/** Run the real script in a scratch checkout with a fake `node` that records
-	 *  the key it was asked to put and the value it received on stdin. */
-	function run(devVars: string, args: string[] = []) {
+	/**
+	 * Run the real script in a scratch checkout with a fake `node` that records
+	 * the key it was asked to put and the value it received on stdin.
+	 *
+	 * `secretList` is what the fake answers the script's verification pass with
+	 * (`secret list`); the default leaves that unreadable, which must stay a
+	 * warning rather than a failure.
+	 */
+	function run(
+		devVars: string,
+		args: string[] = [],
+		{ secretList = null }: { secretList?: string[] | null } = {}
+	) {
 		const created = mkdtempSync(join(tmpdir(), 'cogsend-secrets-'));
 		dir = created;
 		writeFileSync(join(created, '.dev.vars'), devVars);
 		const bin = join(created, 'bin');
 		mkdirSync(bin);
+		const listJson = secretList
+			? JSON.stringify(secretList.map((name) => ({ name, type: 'secret_text' })))
+			: null;
 		writeFileSync(
 			join(bin, 'node'),
 			// Absolute shebang: `env node` would find this same file on PATH and
@@ -42,6 +61,11 @@ describe('npm run secrets:put', () => {
 			`#!${process.execPath}
 const { appendFileSync } = require('node:fs');
 const args = process.argv.slice(2);
+const list = ${JSON.stringify(listJson)};
+if (args.includes('list')) {
+	if (list) process.stdout.write(list);
+	process.exit(0);
+}
 let input = '';
 process.stdin.on('data', (chunk) => (input += chunk));
 process.stdin.on('end', () => {
@@ -71,11 +95,13 @@ process.stdin.resume();
 					.filter(Boolean)
 					.map((line) => JSON.parse(line) as { args: string[]; input: string })
 			: [];
-		return { result, calls };
+		// `secret list` calls are recorded too; only the puts say what was uploaded.
+		const puts = calls.filter((call) => call.args[2] === 'put');
+		return { result, calls, puts };
 	}
 
 	it('uploads the parsed value, not the raw line', () => {
-		const { result, calls } = run(
+		const { result, puts } = run(
 			[
 				'APP_ENCRYPTION_KEY="abc123" # rotate after the migration',
 				"API_TOKEN='tok_value'",
@@ -83,14 +109,14 @@ process.stdin.resume();
 			].join('\n')
 		);
 		expect(result.status).toBe(0);
-		const byKey = new Map(calls.map((c) => [c.args.at(-1), c.input]));
+		const byKey = new Map(puts.map((c) => [c.args.at(-1), c.input]));
 		expect(byKey.get('APP_ENCRYPTION_KEY')).toBe('abc123');
 		expect(byKey.get('API_TOKEN')).toBe('tok_value');
 		expect(byKey.get('NOTIFY_EMAIL')).toBe('me@example.com');
 	});
 
 	it('refuses an example value instead of shipping it', () => {
-		const { result, calls } = run(
+		const { result, puts } = run(
 			[
 				'APP_ENCRYPTION_KEY=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
 				'API_TOKEN=real-token'
@@ -98,11 +124,11 @@ process.stdin.resume();
 		);
 		expect(result.status).toBe(0);
 		expect(result.stderr).toContain('skip APP_ENCRYPTION_KEY: still an example value');
-		expect(calls.map((c) => c.args.at(-1))).toEqual(['API_TOKEN']);
+		expect(puts.map((c) => c.args.at(-1))).toEqual(['API_TOKEN']);
 	});
 
 	it('uploads the optional secrets the app reads, including the Resend trio', () => {
-		const { calls } = run(
+		const { puts } = run(
 			[
 				'RESEND_API_KEY=re_123',
 				'NOTIFY_EMAIL=alerts@example.com',
@@ -110,7 +136,7 @@ process.stdin.resume();
 				'ENABLE_VIDEO_UPLOAD=1'
 			].join('\n')
 		);
-		expect(calls.map((c) => c.args.at(-1))).toEqual([
+		expect(puts.map((c) => c.args.at(-1))).toEqual([
 			'RESEND_API_KEY',
 			'NOTIFY_EMAIL',
 			'NOTIFY_FROM',
@@ -119,11 +145,74 @@ process.stdin.resume();
 	});
 
 	it('skips a localhost APP_URL and a missing SKIP_TOTP', () => {
-		const { result, calls } = run(
+		const { result, puts } = run(
 			['APP_URL=http://localhost:5173', 'SKIP_TOTP=1', 'API_TOKEN=real'].join('\n')
 		);
 		expect(result.stderr).toContain('skip APP_URL: local .dev.vars points at localhost');
 		// SKIP_TOTP is a local flag: it is not in the upload list at all.
-		expect(calls.map((c) => c.args.at(-1))).toEqual(['API_TOKEN']);
+		expect(puts.map((c) => c.args.at(-1))).toEqual(['API_TOKEN']);
+	});
+
+	it('names the commented line instead of saying the value is missing', () => {
+		const { result, puts } = run('# LINKEDIN_CLIENT_ID=abc123\n', ['LINKEDIN_CLIENT_ID']);
+		expect(result.stderr).toContain('.dev.vars:1 has it commented out — remove the leading "#"');
+		expect(puts).toEqual([]);
+		// A key named on the command line that uploaded nothing is a failure.
+		expect(result.status).toBe(1);
+	});
+
+	it('separates an empty line from a key that is not in the file', () => {
+		const { result } = run('LINKEDIN_CLIENT_ID=\n', ['LINKEDIN_CLIENT_ID', 'THREADS_APP_ID']);
+		expect(result.stderr).toContain('.dev.vars:1 has no value after the "="');
+		expect(result.stderr).toContain('not in .dev.vars — add a line: THREADS_APP_ID=<value>');
+		expect(result.status).toBe(1);
+	});
+
+	it('reports the Worker list as the proof the upload landed', () => {
+		const { result } = run('API_TOKEN=real-token', [], { secretList: ['API_TOKEN'] });
+		expect(result.stdout).toContain('verified: 1 secret on the Worker');
+		expect(result.status).toBe(0);
+	});
+
+	it('fails when the Worker list does not show the uploaded key', () => {
+		const { result } = run('API_TOKEN=real-token', [], { secretList: [] });
+		expect(result.stderr).toContain('still missing on the Worker: API_TOKEN');
+		expect(result.status).toBe(1);
+	});
+
+	it('only warns when the Worker list cannot be read', () => {
+		const { result } = run('API_TOKEN=real-token');
+		expect(result.stderr).toContain('could not verify against the Worker');
+		expect(result.stdout).toMatch(/uploaded 1 of \d+/);
+		expect(result.status).toBe(0);
+	});
+
+	it('summarises what it uploaded and skipped', () => {
+		const { result } = run('API_TOKEN=real-token\nNOTIFY_EMAIL=');
+		expect(result.stdout).toMatch(/uploaded 1 of \d+, skipped \d+/);
+		expect(result.status).toBe(0);
+	});
+
+	it('uploads from a file saved with CRLF line endings', () => {
+		const { result, puts } = run('API_TOKEN=real-token\r\nLINKEDIN_CLIENT_ID=abc\r\n');
+		expect(puts.map((c) => c.args.at(-1))).toEqual(['API_TOKEN', 'LINKEDIN_CLIENT_ID']);
+		// The two keys in the file are read; the other defaults are still absent.
+		expect(result.stderr).not.toContain('skip API_TOKEN');
+		expect(result.stderr).not.toContain('skip LINKEDIN_CLIENT_ID');
+	});
+
+	it('names the keys a named run did not upload', () => {
+		const { result } = run('LINKEDIN_CLIENT_ID=abc\n', [
+			'LINKEDIN_CLIENT_ID',
+			'LINKEDIN_CLIENT_SECRET'
+		]);
+		expect(result.stderr).toContain('not uploaded: LINKEDIN_CLIENT_SECRET');
+		expect(result.status).toBe(1);
+	});
+
+	it('uploads a repeated key once, not once per mention', () => {
+		const { result, puts } = run('API_TOKEN=real-token', ['API_TOKEN', 'API_TOKEN']);
+		expect(puts).toHaveLength(1);
+		expect(result.status).toBe(0);
 	});
 });

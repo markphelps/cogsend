@@ -219,7 +219,9 @@ export async function ensureTargets(
 			}
 		}
 
-		if (winner.remotePostId) {
+		// Status first, like classifyWinner: a platform that answered without an
+		// id still published the post.
+		if (winner.status === 'published' || winner.remotePostId) {
 			out.push({ target: winner, reused: true, alreadyPublished: true, inFlight: false });
 			continue;
 		}
@@ -249,7 +251,7 @@ export async function ensureTargets(
 		if (!updated) {
 			const latest =
 				(await loadTargets(db, draftId, conn.id)).find((row) => row.id === winner!.id) ?? winner;
-			if (latest.remotePostId) {
+			if (latest.status === 'published' || latest.remotePostId) {
 				out.push({ target: latest, reused: true, alreadyPublished: true, inFlight: false });
 				continue;
 			}

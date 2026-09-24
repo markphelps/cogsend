@@ -88,5 +88,12 @@ describe('session idle check', () => {
 		expect(isSessionIdle(null, now)).toBe(true);
 		expect(isSessionIdle(undefined, now)).toBe(true);
 		expect(isSessionIdle(new Date(now.getTime() - 60_000), now)).toBe(false);
+		// A remembered browser survives a few days away; an ordinary session does not.
+		const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60_000);
+		expect(isSessionIdle(threeDaysAgo, now)).toBe(true);
+		expect(isSessionIdle(threeDaysAgo, now, true)).toBe(false);
+		const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60_000);
+		expect(isSessionIdle(eightDaysAgo, now, true)).toBe(true);
+		expect(isSessionIdle(null, now, true)).toBe(true);
 	});
 });

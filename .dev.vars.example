@@ -1,5 +1,10 @@
 # Copy to .dev.vars for local `npm run dev`
 #
+# Optional keys are commented out until you need them: uncomment the line and
+# put the value after the `=`. A value on a line that still starts with `#` is
+# ignored — by the Worker, and by `npm run secrets:put`, which then reports the
+# key as having no local value.
+#
 # Required, and the only secret a deployment has to bring. Generate one with
 # `openssl rand -hex 32` — it encrypts the provider tokens stored in D1, and
 # AUTH_SECRET and SCHEDULER_SECRET are derived from it (see below). It cannot be
@@ -51,6 +56,11 @@ APP_ENCRYPTION_KEY=
 # against LinkedIn's live API, so it is off unless you set this. The file
 # picker hides video while it is off, and the API refuses video files.
 # ENABLE_VIDEO_UPLOAD=1
+# Optional. Calls one request may make (D1 statements, R2 operations, platform
+# requests). Unset means the Workers Free plan's 50, and the scheduler publishes
+# what fits and leaves the rest for the next tick. On a paid Workers plan, set
+# 10000 to publish everything due at once.
+# SUBREQUEST_LIMIT=10000
 
 # Optional. Failure digest via Resend: the API key plus the address that
 # should receive it. Unset means failures only show in the app.

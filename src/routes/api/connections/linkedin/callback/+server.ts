@@ -5,6 +5,7 @@ import { linkedinExchangeCode } from '$lib/server/providers';
 export const GET = createOAuthCallback({
 	platform: 'linkedin',
 	pendingMarker: 'linkedin',
+	accountIdKey: 'personUrn',
 	async complete({ pending, code, env }) {
 		const clientSecret = await decryptSecret(pending.clientSecretEnc, env.APP_ENCRYPTION_KEY);
 		const exchanged = await linkedinExchangeCode({

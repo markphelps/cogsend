@@ -7,23 +7,26 @@ import type { AppEnv } from './env';
 export const AUTH_GATE_MAX_FAILURES = 8;
 export const AUTH_GATE_WINDOW_MS = 15 * 60_000;
 
-export type AuthGateKind = 'password' | 'rotate-gate' | 'totp-gate';
+export type AuthGateKind = 'password' | 'password-all' | 'rotate-gate' | 'totp-gate';
 
 function gateExpires(now = new Date()) {
 	return new Date(now.getTime() + AUTH_GATE_WINDOW_MS);
 }
 
-async function gateTokenHash(env: AppEnv, kind: AuthGateKind, userId: string) {
-	return hashToken(`gate:${kind}:${userId}`, env.AUTH_SECRET);
+/** `scope` narrows a gate further, e.g. to one client address. */
+async function gateTokenHash(env: AppEnv, kind: AuthGateKind, userId: string, scope?: string) {
+	return hashToken(`gate:${kind}:${userId}${scope ? `:${scope}` : ''}`, env.AUTH_SECRET);
 }
 
 export async function assertAuthGateOpen(
 	db: AppDb,
 	env: AppEnv,
 	userId: string,
-	kind: AuthGateKind
+	kind: AuthGateKind,
+	opts: { scope?: string; max?: number } = {}
 ) {
-	const tokenHash = await gateTokenHash(env, kind, userId);
+	const max = opts.max ?? AUTH_GATE_MAX_FAILURES;
+	const tokenHash = await gateTokenHash(env, kind, userId, opts.scope);
 	const row = await first(
 		db.select().from(mfaChallenges).where(eq(mfaChallenges.tokenHash, tokenHash))
 	);
@@ -33,7 +36,7 @@ export async function assertAuthGateOpen(
 		await db.delete(mfaChallenges).where(eq(mfaChallenges.id, row.id));
 		return;
 	}
-	if (row.failedAttempts >= AUTH_GATE_MAX_FAILURES) {
+	if (row.failedAttempts >= max) {
 		throw Object.assign(new Error('Too many attempts — try again in 15 minutes'), { status: 401 });
 	}
 }
@@ -42,9 +45,11 @@ export async function recordAuthGateFailure(
 	db: AppDb,
 	env: AppEnv,
 	userId: string,
-	kind: AuthGateKind
+	kind: AuthGateKind,
+	opts: { scope?: string; max?: number } = {}
 ) {
-	const tokenHash = await gateTokenHash(env, kind, userId);
+	const max = opts.max ?? AUTH_GATE_MAX_FAILURES;
+	const tokenHash = await gateTokenHash(env, kind, userId, opts.scope);
 	const now = new Date();
 	const nowMs = now.getTime();
 	const expiry = gateExpires(now);
@@ -71,17 +76,91 @@ export async function recordAuthGateFailure(
 				failedAttempts: sql`CASE WHEN ${mfaChallenges.expiresAt} < ${nowMs} THEN 1 ELSE ${mfaChallenges.failedAttempts} + 1 END`,
 				expiresAt: sql`CASE
 						WHEN ${mfaChallenges.expiresAt} < ${nowMs} THEN ${expiry.getTime()}
-						WHEN ${mfaChallenges.failedAttempts} + 1 >= ${AUTH_GATE_MAX_FAILURES} THEN ${expiry.getTime()}
+						WHEN ${mfaChallenges.failedAttempts} + 1 >= ${max} THEN ${expiry.getTime()}
 						ELSE ${mfaChallenges.expiresAt}
 					END`
 			}
 		})
 		.returning({ failedAttempts: mfaChallenges.failedAttempts });
 	const failedAttempts = rows[0]?.failedAttempts ?? 1;
-	return { locked: failedAttempts >= AUTH_GATE_MAX_FAILURES };
+	return { locked: failedAttempts >= max };
 }
 
-export async function clearAuthGate(db: AppDb, env: AppEnv, userId: string, kind: AuthGateKind) {
-	const tokenHash = await gateTokenHash(env, kind, userId);
+export async function clearAuthGate(
+	db: AppDb,
+	env: AppEnv,
+	userId: string,
+	kind: AuthGateKind,
+	opts: { scope?: string } = {}
+) {
+	const tokenHash = await gateTokenHash(env, kind, userId, opts.scope);
 	await db.delete(mfaChallenges).where(and(eq(mfaChallenges.tokenHash, tokenHash)));
+}
+
+/**
+ * Wrong passwords are counted per client address and across all addresses.
+ *
+ * A per-account count alone let anyone who knew the owner's email lock them
+ * out, fifteen minutes at a time, indefinitely. Counting per address means a
+ * guesser locks only themselves (eight failures, as before); the account-wide
+ * cap, set higher, still stops guessing spread over many addresses. Without an
+ * address (local dev, tests) the per-account count is the one that applies.
+ */
+export const PASSWORD_GATE_GLOBAL_MAX = 40;
+
+/**
+ * The bucket for a client address: the address itself for IPv4, the /64 for
+ * IPv6 — one connection is usually handed a whole /64, so counting single
+ * IPv6 addresses would give a guesser billions of fresh buckets.
+ */
+export function clientAddressBucket(ip: string | null | undefined): string | undefined {
+	const value = ip?.trim().toLowerCase();
+	if (!value) return undefined;
+	if (!value.includes(':')) return value;
+	// An IPv4 address written as IPv6 (`::ffff:192.0.2.1`) is that IPv4 address.
+	if (value.includes('.')) return value.slice(value.lastIndexOf(':') + 1);
+	const [head, tail = ''] = value.split('::');
+	const left = head ? head.split(':') : [];
+	const right = value.includes('::') && tail ? tail.split(':') : [];
+	const fill = value.includes('::')
+		? Array(Math.max(0, 8 - left.length - right.length)).fill('0')
+		: [];
+	const groups = [...left, ...fill, ...right].map((g) => g.replace(/^0+(?=.)/, ''));
+	return `${groups.slice(0, 4).join(':')}::/64`;
+}
+
+export async function assertPasswordGateOpen(
+	db: AppDb,
+	env: AppEnv,
+	userId: string,
+	ip: string | null | undefined
+) {
+	await assertAuthGateOpen(db, env, userId, 'password', { scope: clientAddressBucket(ip) });
+	await assertAuthGateOpen(db, env, userId, 'password-all', { max: PASSWORD_GATE_GLOBAL_MAX });
+}
+
+export async function recordPasswordFailure(
+	db: AppDb,
+	env: AppEnv,
+	userId: string,
+	ip: string | null | undefined
+): Promise<{ locked: boolean }> {
+	const own = await recordAuthGateFailure(db, env, userId, 'password', {
+		scope: clientAddressBucket(ip)
+	});
+	const all = await recordAuthGateFailure(db, env, userId, 'password-all', {
+		max: PASSWORD_GATE_GLOBAL_MAX
+	});
+	return { locked: own.locked || all.locked };
+}
+
+/** A correct password clears this address's count and the account-wide one. */
+export async function clearPasswordGate(
+	db: AppDb,
+	env: AppEnv,
+	userId: string,
+	ip: string | null | undefined
+) {
+	await clearAuthGate(db, env, userId, 'password', { scope: clientAddressBucket(ip) });
+	await clearAuthGate(db, env, userId, 'password-all');
 }

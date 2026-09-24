@@ -70,7 +70,7 @@ jobs:
           echo "Changed files:"
           printf '%s\n' "$changed" | sed 's/^/  /'
           # Everything outside this list is code: the browser suites run.
-          if printf '%s\n' "$changed" | grep -qvE '^(docs/|README\.md$|CONTRIBUTING\.md$|SECURITY\.md$|THIRD-PARTY-NOTICES\.md$|LICENSE$)'; then
+          if printf '%s\n' "$changed" | grep -qvE '^(docs/|README\.md$|CONTRIBUTING\.md$|SECURITY\.md$|THIRD-PARTY-NOTICES\.md$|LICENSE$|AGENTS\.md$)'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "Code changed — the browser suites will run."
           else

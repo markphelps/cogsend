@@ -76,6 +76,22 @@ export function buildLinkFacets(text: string): Array<{
 	return facets;
 }
 
+/** Refresh when an access token has less than this left. */
+const ACCESS_JWT_SKEW_MS = 5 * 60_000;
+
+/** The `exp` of a JWT in milliseconds, or null when it cannot be read. */
+export function jwtExpiryMs(token: string | undefined): number | null {
+	const payload = token?.split('.')[1];
+	if (!payload) return null;
+	try {
+		const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+		const exp = (JSON.parse(json) as { exp?: unknown }).exp;
+		return typeof exp === 'number' && Number.isFinite(exp) ? exp * 1000 : null;
+	} catch {
+		return null;
+	}
+}
+
 async function ensureSession(
 	creds: ConnectionCredentials,
 	fetchImpl: FetchLike
@@ -178,16 +194,23 @@ async function createPostRecord(
 			collection: 'app.bsky.feed.post',
 			// A record key we choose, so a retry lands on the same key: the PDS
 			// refuses the duplicate instead of creating a second post, and the
-			// caller turns that refusal back into "it is already published".
+			// refusal is turned back into "it is already published" below.
 			...(rkey ? { rkey } : {}),
 			record: { $type: 'app.bsky.feed.post', ...post }
 		})
 	});
 	if (!res.ok) {
 		const detail = await res.text();
-		if (rkey && res.status === 400 && /already exists|alreadyexists|duplicate/i.test(detail)) {
-			// The first attempt's response was lost after the record landed.
-			return { uri: `at://${creds.did}/app.bsky.feed.post/${rkey}` };
+		// A retry whose first attempt landed but lost its response. The PDS
+		// does not say so in a recognisable way — a taken key surfaces as a
+		// generic 500 from the repository layer — so ask whether our key holds
+		// a record. It is derived from this target and segment, so a record
+		// there is this post. 401 is left alone: the caller refreshes and
+		// retries, and a lookup with the same token would only fail too.
+		if (rkey && res.status !== 401) {
+			const uri = `at://${creds.did}/app.bsky.feed.post/${rkey}`;
+			const cid = await resolveRecordCid(creds, uri, fetchImpl).catch(() => null);
+			if (cid) return { uri, cid };
 		}
 		throw upstreamError('Bluesky createRecord', res.status, detail);
 	}
@@ -431,14 +454,9 @@ export const blueskyProvider: PlatformProvider = {
 				const reply = root && parent ? { root, parent } : undefined;
 				// The rkey is derived from the target and the segment, so the
 				// retry of a lost response hits the same key instead of creating a
-				// second post. Bluesky's own rkeys are opaque, hence passing one.
-				const result = await publishOne(
-					segments[i],
-					creds,
-					fetchImpl,
-					reply,
-					opts?.idempotencyKey?.(i)
-				);
+				// second post. It must be a TID: posts declare `"key": "tid"` and
+				// the PDS refuses any other record key.
+				const result = await publishOne(segments[i], creds, fetchImpl, reply, opts?.recordKey?.(i));
 				// The count matters even when the ids are missing: the checkpoint
 				// is what stops a retry from reposting a segment.
 				segmentIds.push(result.uri ?? '');
@@ -489,6 +507,11 @@ export const blueskyProvider: PlatformProvider = {
 	},
 
 	async refreshIfNeeded(creds, fetchImpl = providerFetch) {
+		// Refreshing rotates the refresh token and costs a call, so only do it
+		// when the access token is close to running out. A token whose expiry
+		// cannot be read is refreshed, as every publish used to.
+		const exp = jwtExpiryMs(creds.accessJwt);
+		if (creds.did && exp !== null && exp - Date.now() > ACCESS_JWT_SKEW_MS) return creds;
 		return refreshSession(creds, fetchImpl);
 	}
 };

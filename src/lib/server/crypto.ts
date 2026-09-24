@@ -135,14 +135,30 @@ export async function verifyPassword(password: string, stored: string): Promise<
 	return timingSafeEqual(expected, bits);
 }
 
+const HMAC_KEY_CACHE_MAX = 32;
+const hmacKeys = new Map<string, Promise<CryptoKey>>();
+
+async function hmacKey(secret: string): Promise<CryptoKey> {
+	const cached = hmacKeys.get(secret);
+	if (cached) return cached;
+	const pending = crypto.subtle
+		.importKey('raw', utf8Bytes(secret) as BufferSource, { name: 'HMAC', hash: 'SHA-256' }, false, [
+			'sign'
+		])
+		.catch((err) => {
+			hmacKeys.delete(secret);
+			throw err;
+		});
+	hmacKeys.set(secret, pending);
+	if (hmacKeys.size > HMAC_KEY_CACHE_MAX) {
+		const oldest = hmacKeys.keys().next().value;
+		if (oldest !== undefined && oldest !== secret) hmacKeys.delete(oldest);
+	}
+	return pending;
+}
+
 export async function hmacHex(secret: string, value: string): Promise<string> {
-	const key = await crypto.subtle.importKey(
-		'raw',
-		utf8Bytes(secret) as BufferSource,
-		{ name: 'HMAC', hash: 'SHA-256' },
-		false,
-		['sign']
-	);
+	const key = await hmacKey(secret);
 	const sig = await crypto.subtle.sign('HMAC', key, utf8Bytes(value) as BufferSource);
 	return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, '0')).join('');
 }

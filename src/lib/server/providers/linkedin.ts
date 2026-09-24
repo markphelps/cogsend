@@ -21,8 +21,10 @@ export { LINKEDIN_MAX_IMAGE_BYTES, LINKEDIN_MAX_IMAGES } from '$lib/domain/media
 // Single mp4 per post; 95MB keeps uploads under the Worker request body limit.
 export const LINKEDIN_VIDEO_MIMES = ['video/mp4'];
 export const LINKEDIN_MAX_VIDEO_BYTES = 95_000_000;
-// LinkedIn versions are YYYYMM and must be < 12 months old; bump when stale.
-const LINKEDIN_VERSION = '202601';
+// LinkedIn versions are YYYYMM and each is supported for at least a year from
+// its release, so 202609 is good until at least September 2027. Bump it before
+// then (changelog: learn.microsoft.com/linkedin/marketing/integrations/recent-changes).
+export const LINKEDIN_VERSION = '202609';
 const REFRESH_SKEW_MS = 7 * 24 * 60 * 60 * 1000;
 
 function authorUrn(creds: ConnectionCredentials, meta?: ConnectionMeta): string {
@@ -47,6 +49,34 @@ function singlePost(content: NormalizedPost): { text: string; media: MediaAttach
 		text: joinThreadTexts(segments.map((s) => s.text)),
 		media: segments.flatMap((s) => s.media ?? [])
 	};
+}
+
+/**
+ * `commentary` is LinkedIn "little" text: `\ | { } @ [ ] ( ) < > # * _ ~` are
+ * markup, and LinkedIn requires every one of them backslash-escaped even when
+ * no mention or template is meant. Unescaped, a single `(` truncates the rest of
+ * the post. See https://learn.microsoft.com/linkedin/marketing/community-management/shares/little-text-format
+ *
+ * A `#` that starts a word is the one exception: `#word` is little's own
+ * hashtag element, so escaping it would turn every hashtag into plain text.
+ */
+export function escapeLittleText(text: string): string {
+	return text.replace(/[\\|{}@[\]()<>#*_~]/g, (ch, offset: number) => {
+		if (ch === '#') {
+			const before = offset === 0 ? '' : text[offset - 1];
+			const after = text[offset + 1] ?? '';
+			if ((before === '' || /\s/.test(before)) && /[\p{L}\p{N}]/u.test(after)) return ch;
+		}
+		return `\\${ch}`;
+	});
+}
+
+/** LinkedIn caps alt text at 4,086 characters; blank means none. */
+const LINKEDIN_MAX_ALT_TEXT = 4086;
+
+function linkedinAltText(m: MediaAttachment | undefined): string | undefined {
+	const alt = m?.alt?.trim();
+	return alt ? alt.slice(0, LINKEDIN_MAX_ALT_TEXT) : undefined;
 }
 
 async function loadBytes(m: MediaAttachment): Promise<Uint8Array> {
@@ -430,7 +460,7 @@ export const linkedinProvider: PlatformProvider = {
 
 		const body: Record<string, unknown> = {
 			author: owner,
-			commentary: text,
+			commentary: escapeLittleText(text),
 			visibility: 'PUBLIC',
 			distribution: {
 				feedDistribution: 'MAIN_FEED',
@@ -443,9 +473,13 @@ export const linkedinProvider: PlatformProvider = {
 		if (videoUrn) {
 			body.content = { video: { id: videoUrn, title: text || undefined } };
 		} else if (imageUrns.length === 1) {
-			body.content = { media: { id: imageUrns[0], title: images[0]?.alt || undefined } };
+			body.content = { media: { id: imageUrns[0], altText: linkedinAltText(images[0]) } };
 		} else if (imageUrns.length > 1) {
-			body.content = { multiImage: { images: imageUrns.map((id) => ({ id })) } };
+			body.content = {
+				multiImage: {
+					images: imageUrns.map((id, i) => ({ id, altText: linkedinAltText(images[i]) }))
+				}
+			};
 		} else {
 			// No media: attach article card so the link unfurls with OG image.
 			try {
@@ -483,11 +517,13 @@ export const linkedinProvider: PlatformProvider = {
 	},
 
 	refreshImpossibleReason(creds): string | null {
-		if (creds.expiresAt && creds.expiresAt - Date.now() > REFRESH_SKEW_MS) return null;
-		if (!creds.refreshToken || !creds.clientId || !creds.clientSecret) {
-			return 'LinkedIn token cannot be refreshed (incomplete credentials) — reconnect';
-		}
-		return null;
+		if (creds.refreshToken && creds.clientId && creds.clientSecret) return null;
+		// Refresh tokens are only issued to approved Marketing Developer Platform
+		// apps, so most connections have none and live on a 60-day access token.
+		// That token keeps working until it expires: only a token that has
+		// actually run out makes a publish pointless.
+		if (!creds.expiresAt || creds.expiresAt > Date.now()) return null;
+		return 'LinkedIn token expired and cannot be refreshed — reconnect';
 	},
 
 	async refreshIfNeeded(creds, fetchImpl = providerFetch): Promise<ConnectionCredentials> {

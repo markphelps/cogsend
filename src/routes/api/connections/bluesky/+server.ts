@@ -1,7 +1,8 @@
 import { and, eq } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
 import { encryptJson } from '$lib/server/crypto';
-import { first, newId } from '$lib/server/db/client';
+import { newId } from '$lib/server/db/client';
+import { findExistingConnection } from '$lib/server/oauth-callback';
 import { connections } from '$lib/server/db/schema';
 import { fail, handleError, ok } from '$lib/server/http';
 import { blueskyCreateSession } from '$lib/server/providers';
@@ -29,17 +30,16 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			},
 			locals.env.APP_ENCRYPTION_KEY
 		);
-		const existing = await first(
-			locals.db
+		// Matched on the DID first: a Bluesky handle is a domain and can change,
+		// and a changed handle must revive the account's row, not add a second.
+		const existing = findExistingConnection(
+			await locals.db
 				.select()
 				.from(connections)
-				.where(
-					and(
-						eq(connections.userId, user.id),
-						eq(connections.platform, 'bluesky'),
-						eq(connections.handle, session.handle!)
-					)
-				)
+				.where(and(eq(connections.userId, user.id), eq(connections.platform, 'bluesky'))),
+			session.handle ?? '',
+			session.did,
+			'did'
 		);
 		const now = new Date();
 		const data = {

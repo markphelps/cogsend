@@ -38,22 +38,34 @@
 	>([]);
 	let prefSaved = $state<string | null>(null);
 	let prefBusy = $state(false);
-	let displayName = $state('');
-	let instanceName = $state('');
-	let savedInstanceName = $state('');
+	// Name and photo are already on the layout load, so the card is not blank
+	// while the rest of Settings is still fetching.
+	// svelte-ignore state_referenced_locally
+	let displayName = $state(data.displayName ?? '');
+	// svelte-ignore state_referenced_locally
+	let instanceName = $state(data.appName ?? '');
+	// svelte-ignore state_referenced_locally
+	let savedInstanceName = $state((data.appName ?? '').trim());
 	let instanceBusy = $state(false);
-	let accountEmail = $state('');
+	// The signed-in address is already on the layout. Show it immediately and
+	// don't let the account refresh overwrite a value the user has edited.
+	// svelte-ignore state_referenced_locally
+	let accountEmail = $state(data.user?.email ?? '');
+	// svelte-ignore state_referenced_locally
+	const seededAccountEmail = data.user?.email ?? '';
 	let accountPassword = $state('');
 	let accountNewPassword = $state('');
 	let accountConfirm = $state('');
 	let accountBusy = $state(false);
-	let accountLoading = $state(true);
+	let accountLoading = $state(false);
 	let schedulerMessage = $state<string | null>(null);
-	let profilePictureUrl = $state('');
+	// svelte-ignore state_referenced_locally
+	let profilePictureUrl = $state(data.profilePictureUrl ?? '');
 	// The name the server last accepted: the profile form's Save button stays
 	// disabled until the draft drifts from it. The picture is not tracked here
 	// because it saves from its own dialog.
-	let savedDisplayName = $state('');
+	// svelte-ignore state_referenced_locally
+	let savedDisplayName = $state((data.displayName ?? '').trim());
 	let pictureBroken = $state(false);
 	let isPictureDialogOpen = $state(false);
 	let pictureDialogUrl = $state('');
@@ -203,86 +215,146 @@
 	const SKIP_ASK_KEY = 'cogsend-skip-publish-confirm';
 	let askPublish = $state(true);
 
+	let loadGen = 0;
+
 	async function load() {
+		const gen = ++loadGen;
 		if (!prefsLoaded) prefsLoading = true;
 		if (!keyLoaded) keyLoading = true;
 		err = null;
-		try {
-			const [totp, settings, conns, key, account, health, tick, update] = await Promise.all([
-				fetch('/api/auth/totp/status'),
-				fetch('/api/settings'),
-				fetch('/api/connections'),
-				fetch('/api/key'),
-				fetch('/api/account'),
-				fetch('/api/scheduler/health'),
-				fetch('/api/scheduler/tick-token'),
-				fetch('/api/release')
-			]);
-			// An expired session is not a broken setting: sign in again.
-			if (
-				[totp, settings, conns, key, account, health, tick, update].some((res) =>
-					sessionExpiredIfUnauthorized(res)
-				)
-			) {
-				err = 'Your session expired — sign in again';
-				return;
+		let settingsOk = true;
+		let keyOk = true;
+		const settled = { settings: false, key: false, account: false };
+		const finish = (which: keyof typeof settled) => {
+			if (gen !== loadGen) return;
+			settled[which] = true;
+			if (which === 'settings') prefsLoading = false;
+			if (which === 'key') keyLoading = false;
+			if (which === 'account') accountLoading = false;
+			if (settled.settings && settled.key && (!settingsOk || !keyOk)) {
+				err = 'Could not load your settings';
 			}
-			if (totp.ok) {
-				const t = await totp.json();
-				totpOn = Boolean(t.enabled);
-				backupRemaining = t.backupRemaining ?? 0;
-			}
-			if (settings.ok) {
-				const s = await settings.json();
-				prefVisibility = s.settings?.mastoVisibility ?? 'public';
-				prefAccounts = s.settings?.defaultAccountIds ?? [];
-				displayName = s.displayName ?? '';
-				instanceName = s.instanceName ?? '';
-				savedInstanceName = instanceName.trim();
-				profilePictureUrl = s.settings?.profilePictureUrl ?? '';
-				savedDisplayName = displayName.trim();
-				pictureBroken = false;
-				prefsLoaded = true;
-			}
-			if (conns.ok) {
-				const c = await conns.json();
-				allAccounts = [...(c.connections || [])].sort(
-					(a, b) => platformRank(a.platform) - platformRank(b.platform)
-				);
-			}
-			if (key.ok) {
-				const k = await key.json();
-				keyActive = k.active;
-				keyLoaded = true;
-			}
-			if (account.ok) {
-				const a = await account.json();
-				accountEmail = a.email ?? '';
-				accountLoading = false;
-			}
-			if (health.ok) {
-				const h = await health.json();
-				schedulerMessage = h.message ?? null;
-				tickHealth = {
-					ok: Boolean(h.ok),
-					lastTickAt: h.lastTickAt ?? null,
-					neverTicked: Boolean(h.neverTicked),
-					overdue: h.overdue ?? 0,
-					stuckPublishing: h.stuckPublishing ?? 0,
-					deployCron: h.deployCron ?? null
-				};
-			}
-			if (tick.ok) tickToken = await tick.json();
-			if (update.ok) release = await update.json();
-			// A 5xx resolves rather than rejecting, so check the status too.
-			if (!settings.ok || !key.ok) err = 'Could not load your settings';
-		} catch {
-			err = humanizeError('fetch failed');
-		} finally {
-			prefsLoading = false;
-			keyLoading = false;
-			accountLoading = false;
-		}
+		};
+		// Each block paints from its own response. The profile card does not
+		// wait on the release check or the scheduler.
+		const track = (
+			input: Promise<Response>,
+			apply: (res: Response) => Promise<void>,
+			which?: keyof typeof settled
+		) => {
+			void input
+				.then(async (res) => {
+					if (gen !== loadGen) return;
+					if (sessionExpiredIfUnauthorized(res)) {
+						err = 'Your session expired — sign in again';
+						prefsLoading = false;
+						keyLoading = false;
+						accountLoading = false;
+						return;
+					}
+					try {
+						await apply(res);
+					} finally {
+						if (which) finish(which);
+					}
+				})
+				.catch(() => {
+					if (gen !== loadGen) return;
+					err = humanizeError('fetch failed');
+					if (which) finish(which);
+				});
+		};
+		track(
+			fetch('/api/settings'),
+			async (res) => {
+				settingsOk = res.ok;
+				if (res.ok) {
+					const s = await res.json();
+					if (gen !== loadGen) return;
+					// Don't clobber a name or instance the user already edited.
+					if (displayName.trim() === savedDisplayName) {
+						displayName = s.displayName ?? '';
+						savedDisplayName = displayName.trim();
+					}
+					if (instanceName.trim() === savedInstanceName) {
+						instanceName = s.instanceName ?? '';
+						savedInstanceName = instanceName.trim();
+					}
+					if (!isPictureDialogOpen) {
+						profilePictureUrl = s.settings?.profilePictureUrl ?? '';
+						pictureBroken = false;
+					}
+					if (!prefsLoaded) {
+						prefVisibility = s.settings?.mastoVisibility ?? 'public';
+						prefAccounts = s.settings?.defaultAccountIds ?? [];
+					}
+					prefsLoaded = true;
+				}
+			},
+			'settings'
+		);
+		track(fetch('/api/connections'), async (res) => {
+			if (!res.ok || gen !== loadGen) return;
+			const c = await res.json();
+			if (gen !== loadGen) return;
+			allAccounts = [...(c.connections || [])].sort(
+				(a, b) => platformRank(a.platform) - platformRank(b.platform)
+			);
+		});
+		track(
+			fetch('/api/key'),
+			async (res) => {
+				keyOk = res.ok;
+				if (res.ok) {
+					const k = await res.json();
+					if (gen !== loadGen) return;
+					keyActive = k.active;
+					keyLoaded = true;
+				}
+			},
+			'key'
+		);
+		track(
+			fetch('/api/account'),
+			async (res) => {
+				if (!res.ok || gen !== loadGen) return;
+				const a = await res.json();
+				if (gen !== loadGen) return;
+				if (accountEmail === seededAccountEmail) accountEmail = a.email ?? '';
+			},
+			'account'
+		);
+		track(fetch('/api/auth/totp/status'), async (res) => {
+			if (!res.ok || gen !== loadGen) return;
+			const t = await res.json();
+			if (gen !== loadGen) return;
+			totpOn = Boolean(t.enabled);
+			backupRemaining = t.backupRemaining ?? 0;
+		});
+		track(fetch('/api/scheduler/health'), async (res) => {
+			if (!res.ok || gen !== loadGen) return;
+			const h = await res.json();
+			if (gen !== loadGen) return;
+			schedulerMessage = h.message ?? null;
+			tickHealth = {
+				ok: Boolean(h.ok),
+				lastTickAt: h.lastTickAt ?? null,
+				neverTicked: Boolean(h.neverTicked),
+				overdue: h.overdue ?? 0,
+				stuckPublishing: h.stuckPublishing ?? 0,
+				deployCron: h.deployCron ?? null
+			};
+		});
+		track(fetch('/api/scheduler/tick-token'), async (res) => {
+			if (!res.ok || gen !== loadGen) return;
+			if (gen !== loadGen) return;
+			tickToken = await res.json();
+		});
+		track(fetch('/api/release'), async (res) => {
+			if (!res.ok || gen !== loadGen) return;
+			if (gen !== loadGen) return;
+			release = await res.json();
+		});
 	}
 
 	async function saveProfile(e: Event) {
@@ -303,6 +375,7 @@
 			displayName = payload.displayName ?? '';
 			savedDisplayName = displayName.trim();
 			flashProfileSaved('Profile saved');
+			await invalidateAll();
 		} catch (e) {
 			err = humanizeError(e instanceof Error ? e.message : 'Could not save');
 		} finally {
@@ -402,6 +475,7 @@
 			pictureTouched = false;
 			isPictureDialogOpen = false;
 			flashProfileSaved(url ? 'Profile picture saved' : 'Profile picture removed');
+			await invalidateAll();
 		} catch (e) {
 			pictureServerError = humanizeError(e instanceof Error ? e.message : 'Could not save picture');
 		} finally {
@@ -662,10 +736,13 @@
 			const res = await fetch('/api/scheduler/test', { method: 'POST' });
 			const payload = await res.json().catch(() => ({}));
 			if (!res.ok) throw new Error(payload.error || 'The tick failed');
+			// The tick stops at the first post that might not fit this request's
+			// Cloudflare call limit; the rest stay due.
+			const later = payload.deferred > 0 ? ' The rest go out on the next tick.' : '';
 			tickTestMessage =
-				payload.processed === 0
+				payload.processed === 0 && !later
 					? 'Tick ran: nothing was due.'
-					: `Tick ran: ${payload.processed} post${payload.processed === 1 ? '' : 's'} handled.`;
+					: `Tick ran: ${payload.processed} post${payload.processed === 1 ? '' : 's'} handled.${later}`;
 			await load();
 		} catch (e) {
 			err = humanizeError(e instanceof Error ? e.message : 'The tick failed');
@@ -725,20 +802,19 @@
 			<form class="space-y-5" onsubmit={saveProfile}>
 				<div class="flex flex-col gap-5 sm:flex-row sm:items-start sm:gap-6">
 					<div class="relative shrink-0 self-start">
+						<span
+							class="flex h-20 w-20 items-center justify-center rounded-full border border-stone-200 bg-stone-100 text-stone-500 shadow-sm"
+							aria-hidden="true"
+						>
+							<User class="h-7 w-7" />
+						</span>
 						{#if profilePictureUrl.trim() && !pictureBroken}
 							<img
 								src={profilePictureUrl.trim()}
 								alt="Profile avatar"
-								class="h-20 w-20 rounded-full border border-stone-200 object-cover shadow-sm"
+								class="absolute inset-0 h-20 w-20 rounded-full border border-stone-200 object-cover shadow-sm"
 								onerror={() => (pictureBroken = true)}
 							/>
-						{:else}
-							<span
-								class="flex h-20 w-20 items-center justify-center rounded-full border border-stone-200 bg-stone-100 text-stone-500 shadow-sm"
-								aria-hidden="true"
-							>
-								<User class="h-7 w-7" />
-							</span>
 						{/if}
 						<button
 							type="button"
@@ -748,7 +824,6 @@
 								pictureServerError = null;
 								isPictureDialogOpen = true;
 							}}
-							disabled={prefsLoading || !prefsLoaded}
 							aria-label={profilePictureUrl.trim() ? 'Edit profile picture' : 'Add profile picture'}
 							title="Edit profile picture"
 							class="absolute -right-0.5 -bottom-0.5 flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 shadow-sm transition-colors hover:bg-stone-100 hover:text-stone-900 disabled:opacity-50"
@@ -770,7 +845,6 @@
 								placeholder="Your name"
 								maxlength="80"
 								autocomplete="name"
-								disabled={prefsLoading || !prefsLoaded}
 								class="w-full rounded-xl border border-stone-200/80 bg-stone-50 px-4 py-2.5 text-[13px] font-bold text-stone-900 shadow-sm transition-all focus:border-stone-900 focus:bg-white focus:ring-2 focus:ring-stone-900 focus:outline-none disabled:opacity-50"
 							/>
 						</div>
@@ -789,10 +863,10 @@
 				<div class="flex flex-wrap items-center gap-3 border-t border-stone-100 pt-4">
 					<button
 						type="submit"
-						disabled={profileBusy || prefsLoading || !prefsLoaded || !nameDirty}
+						disabled={profileBusy || !nameDirty}
 						class="inline-flex items-center gap-2 rounded-full bg-stone-900 px-6 py-2.5 text-[13px] font-bold text-white shadow-md transition-all hover:bg-stone-800 disabled:opacity-50"
 					>
-						{prefsLoading ? 'Loading…' : 'Save Changes'}
+						{profileBusy ? 'Saving…' : 'Save Changes'}
 					</button>
 					{#if profileSaved}
 						<span class="text-xs font-bold text-emerald-700" role="status">{profileSaved}</span>

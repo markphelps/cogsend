@@ -32,6 +32,33 @@ export const PLACEHOLDER_VALUES = new Set([
 export const PLACEHOLDER_EMAIL = 'admin@example.com';
 
 /**
+ * Split a file into lines. CRLF matters here: `.` does not match `\r` in a
+ * JavaScript regex, so a file saved with Windows line endings — or by an editor
+ * that rewrites them — parsed as no keys at all, and every value in it looked
+ * missing.
+ * @param {string} text
+ */
+function splitLines(text) {
+	return String(text ?? '').split(/\r\n|\r|\n/);
+}
+
+/**
+ * `KEY=value` → `value`: a trailing `# comment` removed, surrounding quotes
+ * stripped. Shared so the parser and the "why is this key missing" lookup below
+ * cannot disagree about what a line says.
+ * @param {string} raw
+ */
+function normalizeValue(raw) {
+	let value = String(raw ?? '').trim();
+	// Strip a trailing comment first, then unquote: dotenv accepts
+	// `KEY="value" # comment`, and the value is the quoted part.
+	const comment = value.search(/\s+#/);
+	if (comment !== -1) value = value.slice(0, comment).trim();
+	if (/^".*"$/.test(value) || /^'.*'$/.test(value)) value = value.slice(1, -1);
+	return value;
+}
+
+/**
  * Parse dotenv-style text the way the Worker's own loader does: `KEY=value`,
  * with an optional trailing `# comment` and optional surrounding quotes.
  * @param {string} text
@@ -39,18 +66,60 @@ export const PLACEHOLDER_EMAIL = 'admin@example.com';
  */
 export function parseDevVars(text) {
 	const values = new Map();
-	for (const line of String(text ?? '').split('\n')) {
+	for (const line of splitLines(text)) {
 		const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/);
 		if (!match) continue;
-		let raw = match[2].trim();
-		// Strip a trailing comment first, then unquote: dotenv accepts
-		// `KEY="value" # comment`, and the value is the quoted part.
-		const comment = raw.search(/\s+#/);
-		if (comment !== -1) raw = raw.slice(0, comment).trim();
-		if (/^".*"$/.test(raw) || /^'.*'$/.test(raw)) raw = raw.slice(1, -1);
-		values.set(match[1], raw);
+		values.set(match[1], normalizeValue(match[2]));
 	}
 	return values;
+}
+
+/**
+ * Why a key is not in what `parseDevVars` returns.
+ *
+ * "No local value" is true and useless: `.dev.vars.example` ships every optional
+ * key as a commented `# KEY=`, so a value typed after that `=` while the `#`
+ * stays behind parses as nothing at all — indistinguishable, from the outside,
+ * from a key that is not in the file. Naming the line turns that into a
+ * one-character fix.
+ *
+ * @param {string} text
+ * @param {string} key
+ * @returns {{ status: 'set' | 'empty' | 'commented' | 'absent', value: string, line: number | null }}
+ */
+export function inspectDevVarsKey(text, key) {
+	const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const active = new RegExp(`^\\s*${escaped}\\s*=\\s*(.*)$`);
+	const commented = new RegExp(`^\\s*#\\s*${escaped}\\s*=\\s*(.*)$`);
+	let activeLine = null;
+	let commentedLine = null;
+	let commentedValue = '';
+	for (const [index, line] of splitLines(text).entries()) {
+		if (active.test(line)) {
+			// Last one wins, the same way the Map in `parseDevVars` does.
+			activeLine = index + 1;
+			continue;
+		}
+		const match = commented.exec(line);
+		if (match) {
+			commentedLine = index + 1;
+			commentedValue = normalizeValue(match[1]);
+		}
+	}
+	const value = parseDevVars(text).get(key);
+	if (value !== undefined) {
+		return { status: value === '' ? 'empty' : 'set', value, line: activeLine };
+	}
+	if (commentedLine !== null) {
+		return { status: 'commented', value: commentedValue, line: commentedLine };
+	}
+	return { status: 'absent', value: '', line: null };
+}
+
+/** The raw text, so a caller can point at a line number. Missing file → ''. */
+export function readDevVarsText(file = '.dev.vars') {
+	if (!existsSync(file)) return '';
+	return readFileSync(file, 'utf8');
 }
 
 /**
@@ -60,8 +129,7 @@ export function parseDevVars(text) {
  * @returns {Map<string, string>}
  */
 export function readDevVars(file = '.dev.vars') {
-	if (!existsSync(file)) return new Map();
-	return parseDevVars(readFileSync(file, 'utf8'));
+	return parseDevVars(readDevVarsText(file));
 }
 
 /** @param {string | undefined | null} value */

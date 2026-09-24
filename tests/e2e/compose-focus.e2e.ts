@@ -11,6 +11,13 @@ test.beforeEach(async ({ page }) => {
 	}
 });
 
+/**
+ * An id the server does not know. Compose server-renders the draft named in
+ * `?id=`, so this leaves the editor empty on first paint and the client fetch
+ * runs — the load these tests race. Route handlers answer in its place.
+ */
+const MISS_ID = '00000000-0000-4000-8000-000000000000';
+
 test('typing keeps focus when first autosave assigns the draft id', async ({ page }) => {
 	await page.goto('/compose');
 	expect(new URL(page.url()).searchParams.get('id')).toBeNull();
@@ -36,40 +43,29 @@ test('typing during a slow draft load is kept and saved', async ({ page }) => {
 		.poll(() => new URL(page.url()).searchParams.get('id'), { timeout: 30000 })
 		.toBeTruthy();
 	const id = new URL(page.url()).searchParams.get('id')!;
-	await expect
-		.poll(
-			async () => {
-				const res = await page.request.get(`/api/drafts/${id}`);
-				const body = await res.json();
-				return body.draft?.baseBody;
-			},
-			{ timeout: 30000 }
-		)
-		.toBe('saved content');
+	const stored = async () => {
+		const res = await page.request.get(`/api/drafts/${id}`);
+		const body = await res.json();
+		return body.draft?.baseBody;
+	};
+	await expect.poll(stored, { timeout: 30000 }).toBe('saved content');
+	// Let the autosave debounce settle so nothing is still in flight.
+	await page.waitForTimeout(2000);
 
-	// Re-open it with a deliberately slow load and type while it is in flight.
-	// The stored copy must not replace those keystrokes (and the autosave must
-	// not strand them in a second draft).
-	await page.route(`**/api/drafts/${id}`, async (route) => {
+	// Re-open it with a deliberately slow client load and type while it is in
+	// flight. The stored copy must not replace those keystrokes (and the
+	// autosave must not strand them in a second draft).
+	const draftBody = await (await page.request.get(`/api/drafts/${id}`)).text();
+	await page.route(`**/api/drafts/${MISS_ID}`, async (route) => {
 		await new Promise((resolve) => setTimeout(resolve, 2000));
-		await route.continue();
+		await route.fulfill({ status: 200, contentType: 'application/json', body: draftBody });
 	});
-	await page.goto('/posts');
-	await page.goto(`/compose?id=${id}`);
+	await page.goto(`/compose?id=${MISS_ID}`);
 	const box2 = page.getByTestId('segment-input-0');
 	await box2.click();
 	await box2.pressSequentially('typed while loading', { delay: 10 });
 	await page.waitForTimeout(3000);
 	await expect(box2).toHaveValue('typed while loading');
-	await page.unroute(`**/api/drafts/${id}`);
-	await expect
-		.poll(
-			async () => {
-				const res = await page.request.get(`/api/drafts/${id}`);
-				const body = await res.json();
-				return body.draft?.baseBody;
-			},
-			{ timeout: 30000 }
-		)
-		.toBe('typed while loading');
+	await page.unroute(`**/api/drafts/${MISS_ID}`);
+	await expect.poll(stored, { timeout: 30000 }).toBe('typed while loading');
 });

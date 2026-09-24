@@ -32,6 +32,7 @@ import {
 	cronStateValue,
 	isCronQuotaError,
 	parseJsonc,
+	profileArgs,
 	withoutConfigArg,
 	withoutCronTriggers
 } from './lib/wrangler-config.mjs';
@@ -52,10 +53,11 @@ const hasFlag = (...names) =>
 const configArgs =
 	!existsSync(PERSONAL_CONFIG) || hasFlag('-c', '--config') ? [] : ['--config', PERSONAL_CONFIG];
 
-const profile = process.env.WRANGLER_PROFILE?.trim();
-const profileArgs = !profile || hasFlag('--profile') ? [] : ['--profile', profile];
+// The account selector, from the helper in ./lib/wrangler-config.mjs: an
+// explicit `--profile` in the caller's argv wins over the environment.
+const accountArgs = profileArgs(args, process.env);
 
-const overrides = [...profileArgs, ...configArgs];
+const overrides = [...accountArgs, ...configArgs];
 const fullArgs = [...args, ...overrides];
 
 /** The command line, for `--verbose` and for failures — not for every call. */
@@ -198,7 +200,7 @@ async function noteCronState(value) {
 		`ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`;
 	await runWrangler(
 		[
-			...profileArgs,
+			...accountArgs,
 			'--config',
 			effectiveConfigPath(),
 			'd1',
@@ -236,12 +238,12 @@ if (isDeploy && status !== 0 && !strict && isCronQuotaError(result.output)) {
 		const tempPath = join(dirname(source), NO_CRON_CONFIG_NAME);
 		console.error(cronFallbackWarning());
 		console.error(
-			`\n$ npx wrangler ${[...withoutConfigArg(args), ...profileArgs, '--config', tempPath].join(' ')}`
+			`\n$ npx wrangler ${[...withoutConfigArg(args), ...accountArgs, '--config', tempPath].join(' ')}`
 		);
 		try {
 			writeFileSync(tempPath, `${JSON.stringify(withoutCronTriggers(config), null, '\t')}\n`);
 			const retried = await runWrangler(
-				[...withoutConfigArg(args), ...profileArgs, '--config', tempPath],
+				[...withoutConfigArg(args), ...accountArgs, '--config', tempPath],
 				{ capture: true }
 			);
 			status = retried.status;

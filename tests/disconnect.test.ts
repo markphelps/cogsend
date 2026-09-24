@@ -230,8 +230,25 @@ describe('DELETE /api/connections/[id] — archive, not destroy', () => {
 			scheduledFor: null,
 			updatedAt: now
 		});
+		// A live claim has an attempt row whose checkpoint (segmentIds) is what
+		// a partial-thread resume reads; the 409 must change nothing at all.
+		await db.insert(publishAttempts).values({
+			id: newId(),
+			publishTargetId: freshTarget,
+			startedAt: now,
+			success: false,
+			responseSummary: JSON.stringify({ segmentIds: ['seg-1'], checkpoint: true })
+		});
 		const freshRes = await disconnect(fresh);
 		expect(freshRes.status).toBe(409);
+		// The refused disconnect deleted the live claim's attempt checkpoint:
+		// a resumed thread would then restart from segment 0 and post twice.
+		expect(
+			await db
+				.select()
+				.from(publishAttempts)
+				.where(eq(publishAttempts.publishTargetId, freshTarget))
+		).toHaveLength(1);
 		expect((await db.select().from(connections).where(eq(connections.id, fresh)))[0].status).toBe(
 			'active'
 		);
@@ -379,6 +396,49 @@ describe('DELETE /api/connections/[id] — archive, not destroy', () => {
 		const queuedIds = body.targets.map((t) => t.id);
 		expect(queuedIds).toContain(liveTarget);
 		expect(queuedIds).not.toContain(deadTarget);
+	});
+
+	it('does not delete a claim checkpoint that raced in after the snapshot', async () => {
+		const conn = await addConnection(userId);
+		const draft = await addDraft(userId, 'scheduled');
+		const target = await addTarget(draft, conn);
+		// Interleaving: the route snapshots the targets (not in flight), then a
+		// claim lands — publishing + its attempt row with a resume checkpoint —
+		// before the route's first delete of any kind.
+		let landed = false;
+		const claimLands = async () => {
+			if (landed) return;
+			landed = true;
+			await db
+				.update(publishTargets)
+				.set({ status: 'publishing', attemptCount: 1, updatedAt: new Date() })
+				.where(eq(publishTargets.id, target));
+			await db.insert(publishAttempts).values({
+				id: newId(),
+				publishTargetId: target,
+				startedAt: new Date(),
+				success: false,
+				responseSummary: JSON.stringify({ segmentIds: ['seg-1'], checkpoint: true })
+			});
+		};
+		const realDelete = db.delete.bind(db);
+		(db as { delete: unknown }).delete = (table: unknown) => {
+			const builder = (realDelete as (t: unknown) => { where: (c: never) => Promise<unknown> })(
+				table
+			);
+			return { where: (cond: never) => claimLands().then(() => builder.where(cond)) };
+		};
+		try {
+			const res = await disconnect(conn);
+			// The claim owns the row: the disconnect must refuse and leave the
+			// live claim's attempt checkpoint in place for the resume.
+			expect(res.status).toBe(409);
+			expect(
+				await db.select().from(publishAttempts).where(eq(publishAttempts.publishTargetId, target))
+			).toHaveLength(1);
+		} finally {
+			(db as { delete: unknown }).delete = realDelete;
+		}
 	});
 
 	it('clears stale publishing rows instead of blocking', async () => {

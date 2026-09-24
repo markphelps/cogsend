@@ -1,6 +1,7 @@
 import type { RequestHandler } from './$types';
 import { isLocalAppUrl } from '$lib/domain/app-url';
 import { randomHex } from '$lib/domain/bytes';
+import { OAUTH_PENDING_TTL_MS } from '$lib/domain/oauth-pending';
 import { encryptSecret } from '$lib/server/crypto';
 import { oauthPending } from '$lib/server/db/schema';
 import { fail, handleError, ok } from '$lib/server/http';
@@ -49,7 +50,7 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 			instanceUrl: app.instanceUrl,
 			clientId: app.clientId,
 			clientSecretEnc: await encryptSecret(app.clientSecret, locals.env.APP_ENCRYPTION_KEY),
-			expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+			expiresAt: new Date(Date.now() + OAUTH_PENDING_TTL_MS),
 			createdAt: new Date()
 		});
 		const authorizeUrl = mastodonAuthorizeUrl(

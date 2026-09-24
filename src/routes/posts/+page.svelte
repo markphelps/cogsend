@@ -153,14 +153,22 @@
 	let debouncedQuery = $state('');
 	// First-load flag: shows skeleton cards instead of flashing the empty
 	// state while /api/drafts + /api/queue are in flight.
-	let loading = $state(true);
+	let { data } = $props();
+	// The list arrives with the document. A later refresh keeps it on screen.
+	let loading = $state(false);
 	// Distinguishes "there is nothing here" from "the list never arrived".
-	let loadFailed = $state(false);
-	let drafts = $state<Draft[]>([]);
-	let draftsHasMore = $state(false);
-	let queueHasMore = $state(false);
-	let targets = $state<QueueTarget[]>([]);
-	let error = $state<string | null>(null);
+	// svelte-ignore state_referenced_locally
+	let loadFailed = $state(Boolean(data.loadFailed));
+	// svelte-ignore state_referenced_locally
+	let drafts = $state<Draft[]>(data.drafts);
+	// svelte-ignore state_referenced_locally
+	let draftsHasMore = $state(data.draftsHasMore);
+	// svelte-ignore state_referenced_locally
+	let queueHasMore = $state(data.queueHasMore);
+	// svelte-ignore state_referenced_locally
+	let targets = $state<QueueTarget[]>(data.targets);
+	// svelte-ignore state_referenced_locally
+	let error = $state<string | null>(data.loadFailed ? 'Could not load posts' : null);
 	let busy = $state<string | null>(null);
 	let pendingCancel = $state<{
 		ids: string[];
@@ -185,13 +193,17 @@
 	}
 
 	async function load(opts: { keepError?: boolean } = {}) {
-		loading = true;
+		const bare = drafts.length === 0 && targets.length === 0;
+		if (bare) loading = true;
 		// A fresh attempt supersedes the previous failure banner — except when
 		// this reload was triggered by an action that just reported a failure,
 		// where clearing it would hide the only message the user gets.
 		if (!opts.keepError) error = null;
 		try {
-			const [draftsRes, queueRes] = await Promise.all([fetch('/api/drafts'), fetch('/api/queue')]);
+			const [draftsRes, queueRes] = await Promise.all([
+				fetch('/api/drafts?view=summary'),
+				fetch('/api/queue')
+			]);
 			// An expired session is not a broken social account: sign in again
 			// rather than showing the reconnect copy.
 			if (sessionExpiredIfUnauthorized(draftsRes) || sessionExpiredIfUnauthorized(queueRes)) {
@@ -239,7 +251,6 @@
 	});
 
 	onMount(() => {
-		void load();
 		return () => {
 			if (pendingTimer) window.clearTimeout(pendingTimer);
 			if (pendingDelete) void commitDelete(pendingDelete.id).catch(() => {});
@@ -264,7 +275,8 @@
 	}
 
 	function postMediaSrc(m: PostMedia): string {
-		return `/api/media/${encodeURIComponent(m.storageKey)}`;
+		const src = `/api/media/${encodeURIComponent(m.storageKey)}`;
+		return isPostVideo(m) ? src : `${src}?thumb=1`;
 	}
 
 	function isPostVideo(m: PostMedia): boolean {

@@ -11,9 +11,72 @@ Worker secrets.
 
 | Platform | Where                                                                 | Redirect URI                                  | Worker secrets                                 |
 | -------- | --------------------------------------------------------------------- | --------------------------------------------- | ---------------------------------------------- |
-| LinkedIn | LinkedIn Developer Portal, with the **Share on LinkedIn** product     | `{APP_URL}/api/connections/linkedin/callback` | `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET` |
-| Threads  | Meta app with the **Threads** use case                                | `{APP_URL}/api/connections/threads/callback`  | `THREADS_APP_ID`, `THREADS_APP_SECRET`         |
-| X        | X Developer Console: a Project + App, OAuth 2.0 with type **Web App** | `{APP_URL}/api/connections/x/callback`        | `X_CLIENT_ID`, `X_CLIENT_SECRET`               |
+| LinkedIn | [LinkedIn Developer Portal](https://www.linkedin.com/developers/apps) | `{APP_URL}/api/connections/linkedin/callback` | `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET` |
+| Threads  | [Meta for Developers](https://developers.facebook.com/apps/)          | `{APP_URL}/api/connections/threads/callback`  | `THREADS_APP_ID`, `THREADS_APP_SECRET`         |
+| X        | [X Developer Portal](https://developer.x.com/en/portal/dashboard)     | `{APP_URL}/api/connections/x/callback`        | `X_CLIENT_ID`, `X_CLIENT_SECRET`               |
+
+The last step — putting those secrets on the Worker — works either way:
+
+- **From a checkout.** Put the values in `.dev.vars` and run the platform's
+  command below. The example file ships every optional key commented out:
+  uncomment the line you fill in, or add it if it is not there. `secrets:put`
+  reads that file, then reads the Worker's own secret list back to confirm what
+  landed, and exits non-zero naming anything it did not find.
+- **Without a checkout.** Add each one in the Cloudflare dashboard — Workers &
+  Pages → your Worker → Settings → Variables and Secrets → Add → **Secret** —
+  using the names in the table above. The dashboard applies the change when you
+  press **Deploy** in the same flow.
+
+From the CLI there is no redeploy step at all: the secrets are live as soon as
+the command finishes. Either way, reload the accounts page when you are done.
+
+### LinkedIn
+
+1. Create an app in the [LinkedIn Developer Portal](https://www.linkedin.com/developers/apps).
+   It has to be attached to a LinkedIn Page.
+2. On **Products**, request **Share on LinkedIn** (grants `w_member_social`,
+   which publishes) and **Sign In with LinkedIn using OpenID Connect** (grants
+   `openid profile email`, which fills in the account name and avatar).
+3. On **Auth**, add the redirect URI under **Authorized redirect URLs for your
+   app**, and copy the client id and secret from **Application credentials**.
+4. Set the secrets:
+
+   ```sh
+   npm run secrets:put LINKEDIN_CLIENT_ID LINKEDIN_CLIENT_SECRET
+   ```
+
+LinkedIn issues refresh tokens only to approved Marketing Developer Platform
+partners, so a self-created app gets a 60-day access token and nothing to renew
+it with. Posts keep going out until that token expires; after that the account
+shows as expired, and **Reconnect** on the Accounts page starts a new 60 days.
+
+### Threads
+
+1. Create an app in the [Meta for Developers](https://developers.facebook.com/apps/)
+   dashboard with the **Access the Threads API** use case.
+2. Add the redirect URI under that use case's **Redirect Callback URLs**, and
+   copy the app id and secret.
+3. While the app is still in development, add the Threads account you want to
+   connect as a **Threads tester** and accept the invite from the Threads app.
+4. Set the secrets:
+
+   ```sh
+   npm run secrets:put THREADS_APP_ID THREADS_APP_SECRET
+   ```
+
+### X
+
+1. Create a Project and an App in the [X Developer Portal](https://developer.x.com/en/portal/dashboard).
+2. In the app's **User authentication settings**, turn on OAuth 2.0 with the app
+   type **Web App**, and add the redirect URI as the **Callback URI / Redirect
+   URL**.
+3. Copy the client id, plus the client secret if the app is a confidential
+   client (CogSend also completes the exchange with PKCE alone).
+4. Set the secrets:
+
+   ```sh
+   npm run secrets:put X_CLIENT_ID X_CLIENT_SECRET
+   ```
 
 Posting on X uses pay-per-use API credits — fund a small balance in the console
 first.

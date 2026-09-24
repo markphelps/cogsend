@@ -572,11 +572,11 @@ export const xProvider: PlatformProvider = {
 	},
 
 	refreshImpossibleReason(creds): string | null {
-		if (creds.expiresAt && creds.expiresAt - Date.now() > REFRESH_SKEW_MS) return null;
-		if (!creds.refreshToken || !creds.clientId) {
-			return 'X token cannot be refreshed (incomplete credentials) — reconnect';
-		}
-		return null;
+		if (creds.refreshToken && creds.clientId) return null;
+		// Without refresh material the token still works until it runs out, so
+		// only a token that has actually expired makes a publish pointless.
+		if (!creds.expiresAt || creds.expiresAt > Date.now()) return null;
+		return 'X token expired and cannot be refreshed (incomplete credentials) — reconnect';
 	},
 
 	async refreshIfNeeded(creds, fetchImpl = providerFetch): Promise<ConnectionCredentials> {

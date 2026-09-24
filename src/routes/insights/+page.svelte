@@ -55,11 +55,15 @@
 	 * payload stays on screen (its caption still describes it) with an error
 	 * banner above, so a network blip never blanks the page.
 	 */
-	let range = $state<Range>(30);
+	let { data: pageData } = $props();
+	// svelte-ignore state_referenced_locally
+	let range = $state<Range>(pageData.insights?.range.days ?? 30);
 	const RANGES: Range[] = [7, 30, 90];
 	let style = $state<'cum' | 'bars'>('cum');
-	let data = $state<InsightPayload | null>(null);
-	let loading = $state(true);
+	// svelte-ignore state_referenced_locally
+	let stats = $state<InsightPayload | null>(pageData.insights ?? null);
+	// svelte-ignore state_referenced_locally
+	let loading = $state(!pageData.insights);
 	let error = $state<string | null>(null);
 	let requestToken = 0;
 
@@ -85,7 +89,7 @@
 				error = 'Unexpected response from the server — retry.';
 				return;
 			}
-			data = payload;
+			stats = payload;
 		} catch {
 			if (token === requestToken) {
 				error = 'Could not reach the server — check your connection and retry.';
@@ -118,12 +122,12 @@
 	}
 
 	onMount(() => {
-		void load(range);
+		if (!stats) void load(range);
 	});
 
-	const totalAttempts = $derived((data?.totals.published ?? 0) + (data?.totals.failed ?? 0));
+	const totalAttempts = $derived((stats?.totals.published ?? 0) + (stats?.totals.failed ?? 0));
 	const hasActivity = $derived(
-		totalAttempts > 0 || (data?.totals.scheduled ?? 0) > 0 || (data?.accounts.length ?? 0) > 0
+		totalAttempts > 0 || (stats?.totals.scheduled ?? 0) > 0 || (stats?.accounts.length ?? 0) > 0
 	);
 
 	function countDelta(current: number, previous: number): string {
@@ -142,8 +146,8 @@
 	   Buckets are already local days (or weeks) with display labels, so the
 	   page only lays them out. Heights compare published only: a taller bar
 	   always means more posts, and failures are a marker on top. */
-	const buckets = $derived(data?.series.current ?? []);
-	const previousBuckets = $derived(data?.series.previous ?? []);
+	const buckets = $derived(stats?.series.current ?? []);
+	const previousBuckets = $derived(stats?.series.previous ?? []);
 	const chartMax = $derived(
 		Math.max(1, ...buckets.map((b) => b.published), ...previousBuckets.map((b) => b.published))
 	);
@@ -205,13 +209,13 @@
 
 	/* ── Failures ──────────────────────────────────────────────────────── */
 	const reasonSummary = $derived(
-		(data?.failures ?? []).map((f) => `${f.label} ×${f.count}`).join(' · ')
+		(stats?.failures ?? []).map((f) => `${f.label} ×${f.count}`).join(' · ')
 	);
-	const reasonsCovered = $derived((data?.failures ?? []).reduce((n, f) => n + f.count, 0));
-	const reasonsHidden = $derived(Math.max(0, (data?.totals.failed ?? 0) - reasonsCovered));
+	const reasonsCovered = $derived((stats?.failures ?? []).reduce((n, f) => n + f.count, 0));
+	const reasonsHidden = $derived(Math.max(0, (stats?.totals.failed ?? 0) - reasonsCovered));
 
 	/* ── Accounts ──────────────────────────────────────────────────────── */
-	const accounts = $derived(data?.accounts ?? []);
+	const accounts = $derived(stats?.accounts ?? []);
 	const busiest = $derived(accounts[0] ?? null);
 
 	/** The most recent publish anywhere, for the Last post card. */
@@ -246,9 +250,9 @@
 			<p class="text-[11px] font-bold tracking-widest text-stone-500 uppercase">Analytics</p>
 			<h1 class="text-3xl font-extrabold tracking-tight text-stone-900">Insights</h1>
 			<p class="text-[13px] font-medium text-stone-500">
-				{#if data}
-					Delivery stats for the last {rangeWords(data.range.days)}, compared with the previous
-					{rangeWords(data.range.days)}.
+				{#if stats}
+					Delivery stats for the last {rangeWords(stats.range.days)}, compared with the previous
+					{rangeWords(stats.range.days)}.
 				{:else}
 					Delivery stats, compared with the period before.
 				{/if}
@@ -270,7 +274,7 @@
 		</div>
 	</div>
 
-	{#if loading && !data}
+	{#if loading && !stats}
 		<span class="sr-only">Loading insights…</span>
 	{/if}
 
@@ -300,7 +304,7 @@
 		</div>
 	{/if}
 
-	{#if !data && loading}
+	{#if !stats && loading}
 		<!-- First paint only: skeleton in the real layout's shape. -->
 		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3" aria-hidden="true">
 			{#each [0, 1, 2] as i (i)}
@@ -321,7 +325,7 @@
 			<div class="h-4 w-32 rounded bg-stone-100"></div>
 			<div class="mt-4 h-36 rounded-2xl bg-stone-50"></div>
 		</div>
-	{:else if data && !hasActivity}
+	{:else if stats && !hasActivity}
 		<div
 			class="flex flex-col items-center justify-center rounded-[2rem] border border-dashed border-stone-200/80 bg-white px-4 py-20 text-center"
 		>
@@ -335,26 +339,26 @@
 				Publish a few posts and their delivery stats will show up here.
 			</p>
 		</div>
-	{:else if data}
+	{:else if stats}
 		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3" data-testid="insights-stats">
 			<div class="rounded-[1.5rem] border border-stone-200/80 bg-white p-4 shadow-sm">
 				<p class="text-2xl font-extrabold tracking-tight text-stone-900">
-					{data.totals.published}
+					{stats.totals.published}
 				</p>
 				<p class="mt-1 text-[11px] font-bold tracking-widest text-stone-500 uppercase">Published</p>
 				<p class="mt-1 text-[11px] font-bold text-emerald-700">
-					{countDelta(data.totals.published, data.previous.published)}
+					{countDelta(stats.totals.published, stats.previous.published)}
 				</p>
 			</div>
 			<div class="rounded-[1.5rem] border border-stone-200/80 bg-white p-4 shadow-sm">
 				<p class="text-2xl font-extrabold tracking-tight text-stone-900">
-					{data.totals.scheduled}
+					{stats.totals.scheduled}
 				</p>
 				<p class="mt-1 text-[11px] font-bold tracking-widest text-stone-500 uppercase">Scheduled</p>
 				<p class="mt-1 text-[11px] font-bold text-stone-500">
-					{data.totals.nextScheduledAt
-						? `next ${formatRelativeTime(new Date(data.totals.nextScheduledAt))}`
-						: data.totals.scheduled > 0
+					{stats.totals.nextScheduledAt
+						? `next ${formatRelativeTime(new Date(stats.totals.nextScheduledAt))}`
+						: stats.totals.scheduled > 0
 							? 'no time set'
 							: 'nothing queued'}
 				</p>
@@ -376,13 +380,13 @@
 			<h2 class="text-[15px] font-extrabold tracking-tight text-stone-900">
 				{style === 'cum'
 					? 'Published, cumulative'
-					: data.range.bucket === 'week'
+					: stats.range.bucket === 'week'
 						? 'Posts per week'
 						: 'Posts per day'}
 			</h2>
 			<div class="flex flex-wrap items-center gap-2">
 				<p class="text-[12px] font-semibold text-stone-500">
-					Last {data.range.days === 90 ? '13 weeks' : `${data.range.days} days`}
+					Last {stats.range.days === 90 ? '13 weeks' : `${stats.range.days} days`}
 				</p>
 				<div
 					class="ml-2 inline-flex rounded-xl bg-stone-200/50 p-1"
@@ -535,11 +539,11 @@
 			class="mt-4 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[12.5px] font-medium text-stone-600"
 			data-testid="insights-failures"
 		>
-			{#if data.totals.failed === 0}
+			{#if stats.totals.failed === 0}
 				<span class="text-stone-500">No failures in this period.</span>
 			{:else}
 				<strong class="text-[13px] font-extrabold text-stone-900"
-					>{data.totals.failed} failed</strong
+					>{stats.totals.failed} failed</strong
 				>
 				<span class="text-stone-500"
 					>— {reasonSummary}{#if reasonsHidden > 0}, {reasonsHidden} more{/if}</span
@@ -556,7 +560,7 @@
 		<div class="mt-7 mb-2.5 flex items-center justify-between gap-3">
 			<h2 class="text-[15px] font-extrabold tracking-tight text-stone-900">Accounts</h2>
 			<p class="text-[12px] font-semibold text-stone-500">
-				{data.range.days === 90 ? '13 weeks' : `${data.range.days} days`} · {accounts.length}
+				{stats.range.days === 90 ? '13 weeks' : `${stats.range.days} days`} · {accounts.length}
 				{accounts.length === 1 ? 'account' : 'accounts'}
 			</p>
 		</div>
@@ -624,8 +628,8 @@
 					class="border-t border-stone-100 px-5 py-3 text-[12px] font-semibold text-stone-500"
 					data-testid="insights-account-note"
 				>
-					{#if data.totals.published >= 10 && busiest}
-						Most posts: {platformName(busiest.platform)} — {busiest.published} of {data.totals
+					{#if stats.totals.published >= 10 && busiest}
+						Most posts: {platformName(busiest.platform)} — {busiest.published} of {stats.totals
 							.published}.
 					{/if}
 				</p>

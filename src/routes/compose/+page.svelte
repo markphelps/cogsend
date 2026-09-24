@@ -7,6 +7,7 @@
 <Editor
 	initialConnections={data.connections}
 	initialSettings={data.settings}
+	initialDraft={data.draft}
 	displayName={data.displayName}
 	videoEnabled={data.videoEnabled}
 />

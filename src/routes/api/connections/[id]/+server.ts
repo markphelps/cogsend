@@ -46,14 +46,6 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 		// guard; deleting it just prevents a ghost consumer from firing.
 		const staleBefore = new Date(now.getTime() - STALE_CLAIM_MS);
 		if (removable.length) {
-			// Attempt history hangs off publish_targets. Delete it explicitly
-			// too: with the FK pragma best-effort, the cascade is not a
-			// guarantee, and orphaned attempts would linger forever.
-			for (const chunk of chunkIds(removable.map((t) => t.id))) {
-				await locals.db
-					.delete(publishAttempts)
-					.where(inArray(publishAttempts.publishTargetId, chunk));
-			}
 			await locals.db
 				.delete(publishTargets)
 				.where(
@@ -75,6 +67,18 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 			.select({ id: publishTargets.id })
 			.from(publishTargets)
 			.where(and(eq(publishTargets.connectionId, conn.id), isNull(publishTargets.remotePostId)));
+		// Attempt history hangs off publish_targets. Delete it only for the
+		// targets actually removed: a claim that raced in after the snapshot
+		// kept its row, and its attempt row carries the resume checkpoint
+		// (segmentIds) a partial-thread retry reads, so deleting it would make
+		// the retry repost from segment 0. Explicit instead of relying on the
+		// best-effort FK cascade, so orphaned attempts cannot linger forever.
+		const kept = new Set(remaining.map((t) => t.id));
+		for (const chunk of chunkIds(removable.map((t) => t.id).filter((id) => !kept.has(id)))) {
+			await locals.db
+				.delete(publishAttempts)
+				.where(inArray(publishAttempts.publishTargetId, chunk));
+		}
 		if (remaining.length) {
 			// The guard raced a real claim: keep the connection intact and let
 			// the user retry once the publish settles.

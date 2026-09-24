@@ -5,6 +5,7 @@ import { threadsExchangeCode } from '$lib/server/providers';
 export const GET = createOAuthCallback({
 	platform: 'threads',
 	pendingMarker: 'threads',
+	accountIdKey: 'threadsUserId',
 	async complete({ pending, code, env }) {
 		const appSecret = await decryptSecret(pending.clientSecretEnc, env.APP_ENCRYPTION_KEY);
 		const exchanged = await threadsExchangeCode({

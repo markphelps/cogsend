@@ -1,6 +1,7 @@
 import {
 	and,
 	asc,
+	count,
 	desc,
 	eq,
 	gt,
@@ -28,7 +29,8 @@ import {
 } from './db/schema';
 import type { AppEnv } from './env';
 import type { MediaStore } from './media';
-import { isRetryableError, MAX_PUBLISH_ATTEMPTS, publishTarget } from './publish';
+import { PUBLISH_RESERVE_CALLS, publishTarget } from './publish';
+import type { SubrequestBudget } from './budget';
 import { purgeExpiredMfaChallenges } from './totp';
 import { purgeExpiredSessions } from './auth';
 
@@ -78,7 +80,7 @@ export async function schedulerHealth(db: AppDb, now = new Date()): Promise<Sche
 	const [rows, stuckRows, overdueRows] = (await batchQueries(db, [
 		db.select().from(schedulerHeartbeats).where(eq(schedulerHeartbeats.id, HEARTBEAT_ID)),
 		db
-			.select({ id: publishTargets.id })
+			.select({ n: count() })
 			.from(publishTargets)
 			.where(
 				and(
@@ -88,7 +90,7 @@ export async function schedulerHealth(db: AppDb, now = new Date()): Promise<Sche
 				)
 			),
 		db
-			.select({ id: publishTargets.id })
+			.select({ n: count() })
 			.from(publishTargets)
 			.where(
 				and(
@@ -97,9 +99,13 @@ export async function schedulerHealth(db: AppDb, now = new Date()): Promise<Sche
 					lte(publishTargets.scheduledFor, now)
 				)
 			)
-	])) as [{ lastOkAt: Date }[], { id: string }[], { id: string }[]];
-	const stuckPublishing = stuckRows.length;
-	const overdue = overdueRows.length;
+	])) as [{ lastOkAt: Date }[], { n: unknown }[], { n: unknown }[]];
+	const asCount = (value: unknown) => {
+		const n = typeof value === 'bigint' ? Number(value) : Number(value);
+		return Number.isFinite(n) ? n : 0;
+	};
+	const stuckPublishing = asCount(stuckRows[0]?.n);
+	const overdue = asCount(overdueRows[0]?.n);
 	const row = rows[0];
 	// `lastTickAt` stays null until the first tick ever. That difference matters
 	// to the UI: a fresh instance whose cron was never attached has nothing to
@@ -380,7 +386,14 @@ export async function claimDueTargets(db: AppDb, now = new Date(), limit = TICK_
 export async function runSchedulerTick(
 	db: AppDb,
 	env: AppEnv,
-	opts: { store: MediaStore; queue?: QueueLike | null; fetchImpl?: typeof fetch }
+	opts: {
+		store: MediaStore;
+		queue?: QueueLike | null;
+		fetchImpl?: typeof fetch;
+		/** This request's subrequest count. Without one, the tick behaves as
+		 *  before and works through every due target. */
+		budget?: SubrequestBudget | null;
+	}
 ) {
 	await writeHeartbeat(db);
 	await expireOauthPending(db);
@@ -395,8 +408,13 @@ export async function runSchedulerTick(
 	await recoverStalePublishing(db);
 	const due = await claimDueTargets(db);
 	const results: Array<{ id: string; status: string }> = [];
+	const budget = opts.budget ?? null;
 	for (const t of due) {
 		if (opts.queue) {
+			// A hand-off is a write and a queue send. Once the budget cannot
+			// cover one more and what the tick still has to do, the rest wait
+			// for the next tick.
+			if (budget && results.length > 0 && budget.remaining < 2 + PUBLISH_RESERVE_CALLS) break;
 			// Hand off without pre-claiming: only tag the row. The consumer's
 			// publishTarget performs the real claim (status + attempt bump),
 			// so a pre-set 'publishing' can never trap it into a skip.
@@ -437,8 +455,17 @@ export async function runSchedulerTick(
 		}
 		try {
 			const result = await publishTarget(db, env, opts.store, t.id, {
-				fetchImpl: opts.fetchImpl
+				fetchImpl: opts.fetchImpl,
+				budget,
+				// The first one always runs: deferring it would defer it forever.
+				mustTry: results.length === 0
 			});
+			if (result.deferred) {
+				// Might not finish inside this request's budget. Still due, so
+				// the next tick starts with it; later rows keep their order.
+				results.push({ id: t.id, status: 'deferred' });
+				break;
+			}
 			results.push({ id: t.id, status: result.status });
 		} catch (err) {
 			// Only infrastructure failures reach here: provider failures are
@@ -462,7 +489,8 @@ export async function runSchedulerTick(
 	} catch (err) {
 		console.error('[scheduler] failure digest failed', err);
 	}
-	return { processed: results.length, results, digest };
+	const deferred = results.filter((r) => r.status === 'deferred').length;
+	return { processed: results.length - deferred, deferred, results, digest };
 }
 
 export async function consumePublishJob(
@@ -472,20 +500,10 @@ export async function consumePublishJob(
 	targetId: string,
 	fetchImpl?: typeof fetch
 ) {
-	const result = await publishTarget(db, env, store, targetId, { fetchImpl });
-	if (result.status === 'failed' && result.error && isRetryableError(result.error)) {
-		// Redeliver only while attempts remain: without this, a MAX-exhausted
-		// row re-throws forever (publishTarget re-claims `failed` rows) and
-		// the poison message wedges the queue.
-		const row = await first(
-			db
-				.select({ attemptCount: publishTargets.attemptCount })
-				.from(publishTargets)
-				.where(eq(publishTargets.id, targetId))
-		);
-		if ((row?.attemptCount ?? MAX_PUBLISH_ATTEMPTS) < MAX_PUBLISH_ATTEMPTS) {
-			throw new Error(result.error);
-		}
-	}
-	return result;
+	// A retryable failure is not thrown back to the queue. publishTarget has
+	// already rescheduled the row with backoff, so an immediate redelivery could
+	// never claim it — it would only spend a queue retry. The tick hands the row
+	// to the queue again once it is due. Infrastructure errors still throw, and
+	// the queue retries those.
+	return publishTarget(db, env, store, targetId, { fetchImpl });
 }

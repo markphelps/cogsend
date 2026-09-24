@@ -8,6 +8,7 @@ import {
 	shouldUseSecureCookie
 } from '$lib/domain/session-cookie';
 import { randomHex } from '$lib/domain/bytes';
+import { parseProfileSettings } from '$lib/domain/profile-settings';
 import { hmacHex, verifyPassword } from './crypto';
 import { first, newId, type AppDb } from './db/client';
 import { sessions, users } from './db/schema';
@@ -21,6 +22,9 @@ export type SessionUser = {
 	timezone: string;
 	totpEnabled: boolean;
 	mfaVerified: boolean;
+	/** Filled by the session read. Omitted on hand-built callers (tests, machine stubs). */
+	displayName?: string | null;
+	profilePictureUrl?: string;
 };
 
 export function isFullyVerified(user: SessionUser | null): boolean {
@@ -28,13 +32,21 @@ export function isFullyVerified(user: SessionUser | null): boolean {
 }
 
 /** Session-shaped admin for Bearer API_TOKEN requests. Does not change the D1 user row. */
-export function asMachineUser(admin: { id: string; email: string; timezone: string }): SessionUser {
+export function asMachineUser(admin: {
+	id: string;
+	email: string;
+	timezone: string;
+	displayName?: string | null;
+	settingsJson?: string | null;
+}): SessionUser {
 	return {
 		id: admin.id,
 		email: admin.email,
 		timezone: admin.timezone,
 		totpEnabled: true,
-		mfaVerified: true
+		mfaVerified: true,
+		displayName: admin.displayName ?? null,
+		profilePictureUrl: parseProfileSettings(admin.settingsJson).profilePictureUrl
 	};
 }
 
@@ -43,8 +55,10 @@ export function needsTotpEnroll(user: SessionUser | null): boolean {
 }
 
 // Domain-separated HMAC: session tokens live in the `session:` domain so a
-// token hash can never collide with MFA (`mfa:`), backup (`backup:`), gate
-// (`gate:`) or OAuth-state (`oauth-state:`) hashes even if raw values repeat.
+// token hash can never collide with MFA (`mfa:`), backup (`backup:`) or
+// OAuth-state (`oauth-state:`) hashes even if raw values repeat. Lockout
+// counters (auth-gate.ts) also hash through here, as `session:gate:…`: their
+// input is never a random token, and they live in their own rows.
 // NOTE: this invalidates sessions minted before the prefix was added — users
 // sign in again once after deploy.
 export async function hashToken(raw: string, secret: string): Promise<string> {
@@ -147,7 +161,9 @@ export async function getSessionUser(
 				timezone: users.timezone,
 				totpEnabled: users.totpEnabled,
 				mfaVerified: sessions.mfaVerified,
-				passwordHash: users.passwordHash
+				passwordHash: users.passwordHash,
+				displayName: users.displayName,
+				settingsJson: users.settingsJson
 			})
 			.from(sessions)
 			.innerJoin(users, eq(sessions.userId, users.id))
@@ -169,7 +185,7 @@ export async function getSessionUser(
 		await db.delete(sessions).where(eq(sessions.id, row.sessionId));
 		return null;
 	}
-	if (isSessionIdle(row.lastSeenAt, now)) {
+	if (isSessionIdle(row.lastSeenAt, now, Boolean(row.remember))) {
 		await db.delete(sessions).where(eq(sessions.id, row.sessionId));
 		return null;
 	}
@@ -179,7 +195,9 @@ export async function getSessionUser(
 		email: row.email,
 		timezone: row.timezone,
 		totpEnabled: Boolean(row.totpEnabled),
-		mfaVerified: Boolean(row.mfaVerified)
+		mfaVerified: Boolean(row.mfaVerified),
+		displayName: row.displayName ?? null,
+		profilePictureUrl: parseProfileSettings(row.settingsJson).profilePictureUrl
 	};
 	const maxAge = sessionMaxAgeSeconds(row.remember);
 	// Throttle lastSeenAt writes. Rows without one were rejected above.

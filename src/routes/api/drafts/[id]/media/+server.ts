@@ -4,7 +4,7 @@ import { canAttachMoreImages, MAX_IMAGES_PER_SEGMENT } from '$lib/domain/media-l
 import { chunkIds, first, newId } from '$lib/server/db/client';
 import { draftMedia, draftVariants, drafts, publishTargets } from '$lib/server/db/schema';
 import { fail, handleError, ok } from '$lib/server/http';
-import { saveMediaBytes } from '$lib/server/media';
+import { deleteMediaObjects, saveMediaBytes } from '$lib/server/media';
 import { draftHasInFlightPublish } from '$lib/server/publish-plan';
 import { requireScope, requireUser } from '$lib/server/require';
 
@@ -294,7 +294,7 @@ export const DELETE: RequestHandler = async ({ params, url, locals }) => {
 		await locals.db
 			.delete(draftMedia)
 			.where(and(eq(draftMedia.id, mediaId), eq(draftMedia.draftId, params.id)));
-		if (gone) await locals.media.delete(gone.storageKey);
+		if (gone) await deleteMediaObjects(locals.media, [gone.storageKey]);
 		return ok({ ok: true });
 	} catch (err) {
 		return handleError(err);

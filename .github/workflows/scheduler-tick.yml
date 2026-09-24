@@ -30,8 +30,8 @@ jobs:
           API_TOKEN: ${{ secrets.API_TOKEN }}
         run: |
           set -euo pipefail
-          # Scheduler-only secret preferred (it cannot publish via the API);
-          # API_TOKEN kept as a fallback for existing setups.
+          # Scheduler secret preferred (it reaches only the internal scheduler
+          # routes, not the rest of the API); API_TOKEN kept as a fallback.
           TICK_TOKEN="${SCHEDULER_SECRET:-${API_TOKEN:-}}"
           if [ -z "${APP_URL:-}" ] || [ -z "${TICK_TOKEN:-}" ]; then
             # Forks inherit this workflow but have no secrets. Skip rather than

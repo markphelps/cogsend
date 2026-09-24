@@ -32,6 +32,18 @@ describe('humanizeError', () => {
 	it('falls back for empty input', () => {
 		expect(humanizeError(null)).toBe('Something went wrong');
 	});
+	it('turns the OAuth callback codes into something to act on', () => {
+		// These are our own redirect codes, not provider text: echoing them back
+		// showed the reader the literal string "oauth_expired".
+		expect(humanizeError('oauth_expired')).toMatch(/expired/);
+		expect(humanizeError('oauth_expired')).toMatch(/30 minutes/);
+		expect(humanizeError('oauth_expired')).toMatch(/Connect new/);
+		expect(humanizeError('missing_code')).toMatch(/authorization code/);
+		expect(humanizeError('oauth_failed')).toMatch(/try again/i);
+		// The lookup is exact, so a provider message that merely mentions one of
+		// these words still reaches the reader verbatim.
+		expect(humanizeError('the oauth_expired flag was set')).toContain('oauth_expired flag');
+	});
 	it('maps already-scheduled and reconnect-needed', () => {
 		expect(humanizeError('Already scheduled — cancel or reschedule from Posts')).toMatch(
 			/scheduled/i

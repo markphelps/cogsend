@@ -16,9 +16,10 @@ export const POST: RequestHandler = async ({ locals }) => {
 		requireScope(locals, 'write');
 		const result = await runSchedulerTick(locals.db, locals.env, {
 			store: locals.media,
-			queue: locals.queue
+			queue: locals.queue,
+			budget: locals.budget
 		});
-		return ok({ processed: result.processed, ok: true });
+		return ok({ processed: result.processed, deferred: result.deferred, ok: true });
 	} catch (err) {
 		return handleError(err);
 	}

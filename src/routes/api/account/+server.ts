@@ -3,7 +3,12 @@ import type { RequestHandler } from './$types';
 import { hashPassword, verifyPassword } from '$lib/server/crypto';
 import { users } from '$lib/server/db/schema';
 import { fail, handleError, ok } from '$lib/server/http';
-import { assertAuthGateOpen, clearAuthGate, recordAuthGateFailure } from '$lib/server/auth-gate';
+import {
+	assertPasswordGateOpen,
+	clearPasswordGate,
+	recordPasswordFailure
+} from '$lib/server/auth-gate';
+import { rateLimitKey } from '$lib/server/rate-limit';
 import { getAdminUser, revokeOtherSessions } from '$lib/server/auth';
 import { requireSession } from '$lib/server/require';
 import { emailProblem, normalizeEmail, passwordProblem } from '$lib/domain/credentials';
@@ -39,15 +44,20 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
 		// Same gate as the login form: a live session must not become an
 		// unlimited oracle for the password (25k PBKDF2 is cheap to repeat), and
 		// it is the same secret, so the counters are shared.
-		await assertAuthGateOpen(locals.db, locals.env, row.id, 'password');
+		await assertPasswordGateOpen(locals.db, locals.env, row.id, rateLimitKey(request.headers));
 		if (!(await verifyPassword(currentPassword, row.passwordHash))) {
-			const gate = await recordAuthGateFailure(locals.db, locals.env, row.id, 'password');
+			const gate = await recordPasswordFailure(
+				locals.db,
+				locals.env,
+				row.id,
+				rateLimitKey(request.headers)
+			);
 			return fail(
 				gate.locked ? 'Too many attempts — try again later' : 'Current password is incorrect',
 				401
 			);
 		}
-		await clearAuthGate(locals.db, locals.env, row.id, 'password');
+		await clearPasswordGate(locals.db, locals.env, row.id, rateLimitKey(request.headers));
 
 		const wantEmail = Object.hasOwn(payload, 'email');
 		const wantPassword = Object.hasOwn(payload, 'newPassword');

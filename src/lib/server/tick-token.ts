@@ -57,9 +57,9 @@ interface TickTokenStatus {
  *  here: rotate to get a new one. */
 export async function readTickToken(db: AppDb): Promise<TickTokenStatus> {
 	const [hash, prefix, created] = await Promise.all([
-		readAppSetting(db, HASH_KEY),
-		readAppSetting(db, PREFIX_KEY),
-		readAppSetting(db, CREATED_KEY)
+		readAppSetting(db, HASH_KEY, { fresh: true }),
+		readAppSetting(db, PREFIX_KEY, { fresh: true }),
+		readAppSetting(db, CREATED_KEY, { fresh: true })
 	]);
 	if (!hash) return { configured: false, prefix: null, createdAt: null };
 	const parsed = created ? new Date(created) : null;
@@ -101,7 +101,9 @@ export async function revokeTickToken(db: AppDb): Promise<boolean> {
  */
 export async function verifyTickToken(db: AppDb, raw: string | null | undefined): Promise<boolean> {
 	if (!isTickTokenFormat(raw)) return false;
-	const stored = await readAppSetting(db, HASH_KEY);
+	// Never from the isolate cache: a rotated or revoked token has to stop
+	// working everywhere at once, not whenever other isolates happen to expire.
+	const stored = await readAppSetting(db, HASH_KEY, { fresh: true });
 	if (!stored) return false;
 	const candidate = await hashTickToken(raw);
 	// Both are 64-char hex digests; compare them without an early exit.

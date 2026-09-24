@@ -3,10 +3,18 @@ import type { RequestHandler } from './$types';
 import { first } from '$lib/server/db/client';
 import { draftMedia, drafts } from '$lib/server/db/schema';
 import { fail, handleError } from '$lib/server/http';
-import { assertSafeStorageKey, serveMediaBytes } from '$lib/server/media';
+import {
+	assertSafeStorageKey,
+	jpegResponse,
+	PRIVATE_MEDIA_CACHE,
+	serveMediaBytes,
+	storedThumbnail,
+	thumbCandidate,
+	type ImageResizer
+} from '$lib/server/media';
 import { requireScope, requireUser } from '$lib/server/require';
 
-export const GET: RequestHandler = async ({ params, locals, request }) => {
+export const GET: RequestHandler = async ({ params, locals, request, url, platform }) => {
 	try {
 		const user = requireUser(locals.user);
 		requireScope(locals, 'read');
@@ -22,9 +30,22 @@ export const GET: RequestHandler = async ({ params, locals, request }) => {
 				.where(and(eq(drafts.id, media.draftId), eq(drafts.userId, user.id)))
 		);
 		if (!draft) return fail('Not found', 404);
+		// Posts grid. Only a deployment that bound Cloudflare Images gets a
+		// smaller file; everyone else, and any encode that fails, gets the
+		// original. Skipping the attempt when the binding is absent avoids an
+		// extra storage read on every thumbnail.
+		const images = (platform?.env as { IMAGES?: ImageResizer } | undefined)?.IMAGES ?? null;
+		if (
+			images &&
+			url.searchParams.get('thumb') === '1' &&
+			thumbCandidate(media.mime, media.width, media.height)
+		) {
+			const thumb = await storedThumbnail(locals.media, key, images);
+			if (thumb) return jpegResponse(thumb, PRIVATE_MEDIA_CACHE);
+		}
 		return await serveMediaBytes(locals.media, key, request, {
 			mime: media.mime,
-			cacheControl: 'private, max-age=3600'
+			cacheControl: PRIVATE_MEDIA_CACHE
 		});
 	} catch (err) {
 		return handleError(err);

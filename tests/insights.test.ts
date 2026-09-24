@@ -1,17 +1,19 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
 import { connections, drafts, publishTargets, users } from '$lib/server/db/schema';
 import { newId, type AppDb } from '$lib/server/db/client';
 import { createTestDb } from '$lib/server/db/test';
+import { SERIES_BUCKETS_PER_STATEMENT } from '$lib/server/insights-report';
 import {
 	bucketKind,
 	buildInsightSeries,
 	categorizeFailure,
 	groupFailureReasons,
+	insightFrames,
 	localDayKey,
 	parseInsightRange,
 	rangeSpanDays,
 	rateOf,
+	tallyInsightFrames,
 	type InsightTargetRow
 } from '$lib/domain/insights';
 import { GET as insightsGET } from '../src/routes/api/insights/+server';
@@ -161,6 +163,67 @@ describe('local-day bucketing', () => {
 		expect(series.previous.reduce((n, b) => n + b.published + b.failed, 0)).toBe(2);
 		expect(series.previous.reduce((n, b) => n + b.published, 0)).toBe(1);
 	});
+
+	it('counts the same buckets from millisecond ranges', () => {
+		// The SQL path counts these ranges instead of loading every row. They
+		// have to land on the same bars, including the DST weeks and the clamp
+		// of a stamp that sits just outside the first local day.
+		const cases: Array<{
+			nowMs: number;
+			days: 7 | 30 | 90;
+			timeZone: string;
+			rows: InsightTargetRow[];
+		}> = [
+			{
+				nowMs: NOW,
+				days: 30,
+				timeZone: 'Asia/Tokyo',
+				rows: [
+					{ connectionId: 'c', status: 'published', updatedAtMs: NOW - 1 * DAY },
+					{ connectionId: 'c', status: 'failed', updatedAtMs: NOW - 2 * DAY },
+					{ connectionId: 'c', status: 'published', updatedAtMs: NOW - 31 * DAY },
+					{ connectionId: 'c', status: 'failed', updatedAtMs: NOW - 32 * DAY },
+					{ connectionId: 'c', status: 'published', updatedAtMs: NOW - 29 * DAY - 3_600_000 }
+				]
+			},
+			{
+				nowMs: NOW,
+				days: 90,
+				timeZone: 'America/New_York',
+				rows: Array.from({ length: 20 }, (_, i) => ({
+					connectionId: 'c',
+					status: i % 4 === 0 ? 'failed' : 'published',
+					updatedAtMs: NOW - i * 4 * DAY
+				}))
+			},
+			{
+				nowMs: Date.UTC(2026, 2, 10, 16, 0, 0),
+				days: 7,
+				timeZone: 'America/New_York',
+				rows: Array.from({ length: 7 }, (_, i) => ({
+					connectionId: 'c',
+					status: 'published',
+					updatedAtMs: Date.UTC(2026, 2, 4 + i, 14, 0, 0)
+				}))
+			}
+		];
+		for (const c of cases) {
+			const frames = insightFrames(c.nowMs, c.days, c.timeZone);
+			const currentRows = c.rows.filter((r) => r.updatedAtMs >= frames.sinceMs);
+			const previousRows = c.rows.filter(
+				(r) => r.updatedAtMs >= frames.previousSinceMs && r.updatedAtMs < frames.sinceMs
+			);
+			expect(tallyInsightFrames(currentRows, previousRows, frames)).toEqual(
+				buildInsightSeries({
+					currentRows,
+					previousRows,
+					nowMs: c.nowMs,
+					days: c.days,
+					timeZone: c.timeZone
+				})
+			);
+		}
+	});
 });
 
 describe('failure categorisation', () => {
@@ -240,14 +303,20 @@ describe('GET /api/insights', () => {
 	let db: AppDb;
 	let close: () => void;
 	let count: () => number;
+	let maxParams: () => number;
+	let lastBatchSql: () => string[];
 	let reset: () => void;
 
-	const localsFor = (id: string, apiKeyScopes: string[] | null = null) => ({
+	const localsFor = (
+		id: string,
+		apiKeyScopes: string[] | null = null,
+		timezone = 'Asia/Tokyo'
+	) => ({
 		db,
 		user: {
 			id,
 			email: 'insights@localhost',
-			timezone: 'Asia/Tokyo',
+			timezone,
 			totpEnabled: true,
 			mfaVerified: true
 		},
@@ -290,6 +359,8 @@ describe('GET /api/insights', () => {
 		db = harness.db;
 		close = harness.close;
 		count = harness.count;
+		maxParams = harness.maxParams;
+		lastBatchSql = harness.lastBatchSql;
 		reset = harness.reset;
 
 		vi.useFakeTimers({ toFake: ['Date'] });
@@ -435,8 +506,55 @@ describe('GET /api/insights', () => {
 			rate: 0
 		});
 
-		// Five statements in one batch: the whole page in a single round trip.
-		expect(count()).toBeLessThanOrEqual(6);
+		// One batch: four overview statements plus five chart chunks (30
+		// buckets at seven per statement). The timezone rides on the session.
+		expect(count()).toBeLessThanOrEqual(10);
+	});
+
+	it('keeps every statement inside the D1 bound-parameter cap', async () => {
+		for (const days of [7, 30, 90]) {
+			reset();
+			const res = await insightsGET({
+				locals: localsFor('u1'),
+				url: new URL(`http://localhost/api/insights?days=${days}`)
+			} as never);
+			expect(res.status).toBe(200);
+			// D1 refuses any statement with more than 100 bound parameters
+			// ("too many SQL variables"); the chart's CASE-per-bucket aggregate
+			// is the statement that grows with the range. The lower bound keeps
+			// the counter honest: a broken probe would read 0 and pass the cap.
+			expect(maxParams(), `days=${days}`).toBeGreaterThan(10);
+			expect(maxParams(), `days=${days}`).toBeLessThanOrEqual(100);
+		}
+	});
+
+	it('aliases every chart bucket so D1 cannot collapse the columns', async () => {
+		reset();
+		const res = await insightsGET({
+			locals: localsFor('u1'),
+			url: new URL('http://localhost/api/insights?days=30')
+		} as never);
+		expect(res.status).toBe(200);
+		// D1 keys a result row by column name and collapses duplicates. The
+		// bucket expressions bind the status and both bounds, so without an
+		// alias every one reads the same, the 120 columns fold into one, and
+		// every bucket after the first decodes as 0.
+		const series = lastBatchSql().filter((sql) =>
+			sql.includes('coalesce(sum(case when "publish_targets"."status" = ?')
+		);
+		const buckets = 30;
+		expect(series).toHaveLength(Math.ceil(buckets / SERIES_BUCKETS_PER_STATEMENT));
+		series.forEach((sql, chunk) => {
+			const from = chunk * SERIES_BUCKETS_PER_STATEMENT;
+			const to = Math.min(from + SERIES_BUCKETS_PER_STATEMENT, buckets) - 1;
+			for (const index of [from, to]) {
+				for (const prefix of ['cp', 'cf', 'pp', 'pf']) {
+					expect(sql, `${prefix}${index}`).toContain(` as "${prefix}${index}"`);
+				}
+			}
+			// Every selected expression is aliased, not only the bucket edges.
+			expect(sql.match(/ as "/g) ?? [], `chunk ${chunk}`).toHaveLength(4 * (to - from + 1));
+		});
 	});
 
 	it('narrows the window and compares against the window right before it', async () => {
@@ -517,25 +635,20 @@ describe('GET /api/insights', () => {
 			expect(body.failures).toEqual([]);
 			expect(body.series.current).toHaveLength(30);
 			// The empty case is still one batched round trip.
-			expect(empty.count()).toBeLessThanOrEqual(6);
+			expect(empty.count()).toBeLessThanOrEqual(10);
 		} finally {
 			empty.close();
 		}
 	});
 
-	it('still answers when the stored timezone is invalid', async () => {
-		await db.update(users).set({ timezone: 'Not/AZone' }).where(eq(users.id, 'u1'));
-		try {
-			const res = await insightsGET({
-				locals: localsFor('u1'),
-				url: new URL('http://localhost/api/insights?days=30')
-			} as never);
-			const body = await res.json();
-			expect(res.status).toBe(200);
-			expect(body.series.current).toHaveLength(30);
-			expect(body.series.current.every((b: { label: string }) => b.label.length > 0)).toBe(true);
-		} finally {
-			await db.update(users).set({ timezone: 'Asia/Tokyo' }).where(eq(users.id, 'u1'));
-		}
+	it('still answers when the session timezone is invalid', async () => {
+		const res = await insightsGET({
+			locals: localsFor('u1', null, 'Not/AZone'),
+			url: new URL('http://localhost/api/insights?days=30')
+		} as never);
+		const body = await res.json();
+		expect(res.status).toBe(200);
+		expect(body.series.current).toHaveLength(30);
+		expect(body.series.current.every((b: { label: string }) => b.label.length > 0)).toBe(true);
 	});
 });

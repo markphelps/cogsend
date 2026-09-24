@@ -7,8 +7,6 @@
  * hardcoded on purpose: a fork or a button-created copy still tracks this
  * project's releases, which is exactly what the operator wants to hear about.
  */
-/** Hardcoded on purpose: a fork or a button copy still tracks this project's
- *  releases, which is what the operator wants to hear about. */
 const RELEASE_REPO = 'deepakness/cogsend';
 export const RELEASE_API_URL = `https://api.github.com/repos/${RELEASE_REPO}/releases/latest`;
 export const RELEASES_URL = `https://github.com/${RELEASE_REPO}/releases`;

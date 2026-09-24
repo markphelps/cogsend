@@ -33,9 +33,9 @@ The `main` branch is the only supported version; fixes are not backported.
 ## What the app does by itself
 
 - **A flood guard on the endpoints anybody can call.** `/api/auth/login` and `/api/auth/totp/verify` consult Cloudflare's Rate Limiting binding: twenty requests a minute per client address, enforced at the edge by the same infrastructure as WAF rate-limiting rules. It is per Cloudflare location and eventually consistent, so it is a burst guard rather than accounting.
-- **A lockout per account.** Eight failures in fifteen minutes on the password, and the same on authenticator codes, counted across attempts rather than per challenge. This, not the edge limit, is what makes guessing impractical.
+- **A lockout on guessing.** Eight wrong passwords in fifteen minutes lock out the client address that sent them (an IPv6 address counts by its /64), and forty from any mix of addresses lock the account, so a guesser can lock out themselves but not the owner. Authenticator codes lock the account after eight failures, counted across attempts rather than per challenge. This, not the edge limit, is what makes guessing impractical.
 - **Re-authentication for destructive actions.** Deleting the account requires the password and a current code, so a stolen session alone cannot wipe an instance.
-- **Sessions** are HMAC-hashed in D1, bound to the stored password hash, idle out after 24 hours, and die on a password change.
+- **Sessions** are HMAC-hashed in D1, bound to the stored password hash, idle out after 24 hours (seven days for a browser signed in with "Remember this browser"), and die on a password change.
 
 ## Recommended hardening for your own instance
 

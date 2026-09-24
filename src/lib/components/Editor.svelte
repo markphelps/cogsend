@@ -120,18 +120,82 @@
 		error?: string | null;
 	};
 
+	type EditorDraft = {
+		id: string;
+		baseBody?: string | null;
+		selectedConnectionIds?: string[] | null;
+		variants?: Array<{
+			platform: string;
+			body?: string | null;
+			optionsJson?: { visibility?: string; spoilerText?: string; poll?: unknown };
+		}>;
+		media?: MediaItem[];
+		targets?: Array<{ connectionId?: string | null; scheduledFor?: unknown }>;
+	};
+
 	let {
 		initialConnections = [],
 		initialSettings = null,
+		initialDraft = null,
 		displayName = null,
 		videoEnabled = false
 	}: {
 		initialConnections?: Connection[];
 		initialSettings?: ProfileSettings | null;
+		initialDraft?: EditorDraft | null;
 		displayName?: string | null;
 		/** In-progress LinkedIn video uploads; the server decides, this is the affordance. */
 		videoEnabled?: boolean;
 	} = $props();
+
+	// The open draft is rendered with the page. A later id change still fetches.
+	function openedDraft(): EditorDraft | null {
+		const id = page.url.searchParams.get('id');
+		if (!initialDraft || !id || initialDraft.id !== id) return null;
+		return initialDraft;
+	}
+	const seededDraft = openedDraft();
+	const seededBody = seededDraft?.baseBody || '';
+	const seededOverrides = seededDraft
+		? overridesFromVariants(
+				(seededDraft.variants || []).map((variant) => ({
+					platform: variant.platform,
+					body: variant.body ?? null
+				})),
+				seededBody
+			)
+		: {};
+	const seededMedia = (seededDraft?.media || []).map((m) => ({
+		...m,
+		segmentIndex: m.segmentIndex ?? 0
+	}));
+	// svelte-ignore state_referenced_locally
+	let seededVisibility = initialSettings?.mastoVisibility ?? 'public';
+	let seededCw = '';
+	let seededPoll: PollConfig | null = null;
+	for (const variant of seededDraft?.variants || []) {
+		if (variant.platform === 'mastodon' && variant.optionsJson) {
+			const visibility = variant.optionsJson.visibility;
+			if (
+				visibility === 'public' ||
+				visibility === 'unlisted' ||
+				visibility === 'private' ||
+				visibility === 'direct'
+			) {
+				seededVisibility = visibility;
+			}
+			if (variant.optionsJson.spoilerText) seededCw = variant.optionsJson.spoilerText;
+			if (variant.optionsJson.poll) seededPoll = parsePollConfig(variant.optionsJson.poll);
+		}
+	}
+	const seededSelection = (() => {
+		const saved = seededDraft?.selectedConnectionIds;
+		if (Array.isArray(saved)) return saved;
+		const targetIds = (seededDraft?.targets || [])
+			.map((t) => t.connectionId)
+			.filter((id): id is string => Boolean(id));
+		return targetIds.length ? targetIds : null;
+	})();
 
 	/** What the file picker accepts, and what a drop is filtered down to. */
 	const ACCEPTED_MEDIA = $derived(
@@ -147,15 +211,15 @@
 	);
 
 	let draftId = $state<string | null>(page.url.searchParams.get('id'));
-	let baseBody = $state('');
+	let baseBody = $state(seededBody);
 	let activeTab = $state<ActiveTab>('global');
-	let overrides = $state<PlatformOverrideMap>({});
+	let overrides = $state<PlatformOverrideMap>(seededOverrides);
 	// Snapshot on purpose: the server-rendered list paints first; the client
 	// refresh replaces it via loadConnections().
 	// svelte-ignore state_referenced_locally
 	let connections = $state<Connection[]>(initialConnections);
 	let selected = $state<Set<string>>(new Set());
-	let media = $state<MediaItem[]>([]);
+	let media = $state<MediaItem[]>(seededMedia);
 	let saving = $state(false);
 	let publishing = $state(false);
 	// Single toast. Success auto-dismisses; problems stay until
@@ -170,16 +234,17 @@
 	// The loaded draft's existing schedule (datetime-local, earliest future
 	// target time) or null. openSchedule() starts from it instead of the
 	// fresh-post default while it is still in the future.
-	let loadedSchedule = $state<string | null>(null);
+	let loadedSchedule = $state<string | null>(
+		earliestFutureScheduleValue(seededDraft?.targets, new Date())
+	);
 	// Set when the user changes a schedule control. Kept apart from `dirty`
 	// (body/selection autosave) so a draft response landing mid-edit cannot
 	// replace a schedule the user already picked.
 	let scheduleTouched = $state(false);
 	// Snapshot on purpose: defaults apply to a fresh editor only.
-	// svelte-ignore state_referenced_locally
-	let mastoVisibility = $state(initialSettings?.mastoVisibility ?? 'public');
-	let mastoCW = $state('');
-	let mastoPoll = $state<PollConfig | null>(null);
+	let mastoVisibility = $state(seededVisibility);
+	let mastoCW = $state(seededCw);
+	let mastoPoll = $state<PollConfig | null>(seededPoll);
 	let focusedSegment = $state(0);
 	let uploadingSegment = $state<number | null>(null);
 	let dirty = $state(false);
@@ -209,11 +274,13 @@
 	let announceTimer: ReturnType<typeof setTimeout> | null = null;
 	// Platforms with a persisted variant row. A save only DELETEs rows that
 	// exist instead of firing a DELETE for every platform on every save.
-	let storedVariants = new Set<PlatformId>();
+	let storedVariants = new Set<PlatformId>(
+		(seededDraft?.variants || []).map((v) => v.platform as PlatformId)
+	);
 	let reconnecting = $state<string | null>(null);
 	let didInitSelection = false;
 	let savedSnapshot = $state<string | null>(null);
-	let pendingSelected: string[] | null = null;
+	let pendingSelected: string[] | null = seededSelection;
 	// True only when the user changed the account selection (never when the
 	// editor initializes or restores one). Used to decide whether an in-flight
 	// draft load may overwrite the current selection.
@@ -1132,7 +1199,7 @@
 					const data = await res.json().catch(() => ({}));
 					if (!res.ok) throw new Error(data.error || 'Publish failed');
 					const row = (data.results || [])[0] as
-						{ status?: string; error?: string | null } | undefined;
+						{ status?: string; error?: string | null; deferred?: boolean } | undefined;
 					if (!row) throw new Error('Publish failed');
 					if (row.status === 'published') {
 						setDestinationProgress(connectionId, { status: 'published', error: null });
@@ -1141,6 +1208,13 @@
 					if (row.status === 'publishing') {
 						setDestinationProgress(connectionId, { status: 'publishing', error: null });
 						return { connectionId, status: 'publishing' as const, error: null };
+					}
+					if (row.deferred) {
+						// Left for the scheduler's next tick (the request's call
+						// budget ran short): it is on its way, not failed.
+						const message = 'Queued — goes out on the next scheduler tick';
+						setDestinationProgress(connectionId, { status: 'retrying', error: message });
+						return { connectionId, status: 'retrying' as const, error: message };
 					}
 					if (row.status === 'scheduled') {
 						// Retryable failure: the scheduler retries with backoff.
@@ -1955,7 +2029,7 @@
 		}
 	}
 
-	let loadedDraftContentFor: string | null = null;
+	let loadedDraftContentFor: string | null = seededDraft?.id ?? null;
 	let initLoadedFor: string | null | undefined = undefined;
 	$effect(() => {
 		const id = page.url.searchParams.get('id');
@@ -2327,9 +2401,13 @@
 						{/if}
 					</div>
 
-					<!-- Input Area -->
+					<!-- Input Area. min-w-0 is load-bearing: the link preview's title
+					truncates (nowrap), and a flex item's default min-width:auto let
+					that one line set this card's min-content width, stretching the
+					card past the composer column instead of ellipsizing. -->
 					<div
-						class="flex flex-1 flex-col rounded-[1.5rem] border border-stone-200/80 bg-white p-5 shadow-[0_4px_24px_-8px_rgb(28_25_23/0.06)] transition-all focus-within:border-stone-500 focus-within:shadow-[0_8px_30px_-12px_rgb(28_25_23/0.12)] focus-within:ring-2 focus-within:ring-stone-900/10"
+						data-testid="segment-card-{index}"
+						class="flex min-w-0 flex-1 flex-col rounded-[1.5rem] border border-stone-200/80 bg-white p-5 shadow-[0_4px_24px_-8px_rgb(28_25_23/0.06)] transition-all focus-within:border-stone-500 focus-within:shadow-[0_8px_30px_-12px_rgb(28_25_23/0.12)] focus-within:ring-2 focus-within:ring-stone-900/10"
 					>
 						<textarea
 							use:autoResize={segment}

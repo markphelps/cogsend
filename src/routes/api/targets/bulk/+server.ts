@@ -9,7 +9,7 @@ import {
 import { chunkIds, first } from '$lib/server/db/client';
 import { connections, drafts, publishTargets } from '$lib/server/db/schema';
 import { fail, handleError, ok } from '$lib/server/http';
-import { publishTarget, refreshDraftStatus } from '$lib/server/publish';
+import { PUBLISH_RESERVE_CALLS, publishTarget, refreshDraftStatus } from '$lib/server/publish';
 import { refuseInFlightOrPublished } from '$lib/server/publish-plan';
 import { requireScope, requireUser } from '$lib/server/require';
 
@@ -82,6 +82,11 @@ export const POST: RequestHandler = async ({ request, locals, platform }) => {
 		}
 
 		const staleBefore = new Date(now.getTime() - STALE_CLAIM_MS);
+		// Retries publish inline, one after another, inside this request's call
+		// budget (see $lib/server/budget). Once one is left for the scheduler,
+		// the rest are only reset to "publish now" and the next tick sends them.
+		let retriesStarted = 0;
+		let deferring = false;
 
 		for (const id of ids) {
 			const target = byId.get(id);
@@ -204,6 +209,10 @@ export const POST: RequestHandler = async ({ request, locals, platform }) => {
 					results.push({ id, ok: false, error: 'Account needs reconnect' });
 					continue;
 				}
+				if (deferring && locals.budget.remaining < 2 + PUBLISH_RESERVE_CALLS) {
+					results.push({ id, ok: false, error: 'Too much at once — retry this one again' });
+					continue;
+				}
 				const reset = await locals.db
 					.update(publishTargets)
 					.set({
@@ -236,11 +245,25 @@ export const POST: RequestHandler = async ({ request, locals, platform }) => {
 					else results.push({ id, ok: false, error: 'Already publishing' });
 					continue;
 				}
+				touchedDrafts.add(target.draftId);
+				if (deferring) {
+					results.push({ id, ok: true, status: 'pending' });
+					continue;
+				}
 				// Survive a tab close mid-retry (see the publish route).
-				const task = publishTarget(locals.db, locals.env, locals.media, id, { now });
+				const task = publishTarget(locals.db, locals.env, locals.media, id, {
+					now,
+					budget: locals.budget,
+					mustTry: retriesStarted === 0
+				});
 				platform?.ctx?.waitUntil(task.then(() => undefined).catch(() => undefined));
 				const outcome = await task;
-				touchedDrafts.add(target.draftId);
+				if (outcome.deferred) {
+					deferring = true;
+					results.push({ id, ok: true, status: 'pending' });
+					continue;
+				}
+				retriesStarted += 1;
 				if (outcome.status === 'failed') {
 					results.push({ id, ok: false, error: outcome.error ?? 'Retry failed' });
 				} else {

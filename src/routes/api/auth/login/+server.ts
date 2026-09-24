@@ -1,6 +1,11 @@
 import type { RequestHandler } from './$types';
 import { authenticatePassword, createSession, getAdminUser } from '$lib/server/auth';
-import { assertAuthGateOpen, clearAuthGate, recordAuthGateFailure } from '$lib/server/auth-gate';
+import {
+	assertPasswordGateOpen,
+	clearPasswordGate,
+	recordPasswordFailure
+} from '$lib/server/auth-gate';
+import { rateLimitKey } from '$lib/server/rate-limit';
 import { setMfaCookie, setSessionCookie } from '$lib/server/cookies';
 import { fail, handleError, ok } from '$lib/server/http';
 import { startEnrollChallenge, startLoginChallenge } from '$lib/server/totp';
@@ -19,18 +24,19 @@ export const POST: RequestHandler = async ({ request, locals, cookies, url }) =>
 		// The gate is keyed on the single admin row, so an unknown email must not
 		// advance it — otherwise anyone can lock the real owner out with eight
 		// guesses at a made-up address. Only a wrong password for the actual
-		// admin identity counts.
+		// admin identity counts, and per client address (see auth-gate.ts).
 		const knownEmail = email.trim().toLowerCase() === admin.email.trim().toLowerCase();
-		await assertAuthGateOpen(locals.db, locals.env, admin.id, 'password');
+		const ip = rateLimitKey(request.headers);
+		await assertPasswordGateOpen(locals.db, locals.env, admin.id, ip);
 		const user = await authenticatePassword(locals.db, email, password);
 		if (!user) {
 			if (knownEmail) {
-				const failGate = await recordAuthGateFailure(locals.db, locals.env, admin.id, 'password');
+				const failGate = await recordPasswordFailure(locals.db, locals.env, admin.id, ip);
 				if (failGate.locked) return fail('Too many attempts — try again in 15 minutes', 401);
 			}
 			return fail('Invalid credentials', 401);
 		}
-		await clearAuthGate(locals.db, locals.env, admin.id, 'password');
+		await clearPasswordGate(locals.db, locals.env, admin.id, ip);
 		if (locals.env.skipTotp) {
 			// Local dev: password is the whole login. Mint a verified session.
 			const { raw, maxAge } = await createSession(

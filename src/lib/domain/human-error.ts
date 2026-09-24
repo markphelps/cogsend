@@ -1,4 +1,17 @@
+import { OAUTH_PENDING_TTL_MINUTES } from './oauth-pending';
 import { isThreadsAuthFailure, isThreadsMediaFetchFailure } from './threads-error';
+
+/**
+ * The codes the OAuth callbacks redirect with. They are ours, not the
+ * provider's, so echoing the raw value tells the reader nothing: an expired
+ * connect attempt surfaced as the literal string "oauth_expired" above a
+ * connection that had since succeeded.
+ */
+const OAUTH_CALLBACK_ERRORS: Record<string, string> = {
+	oauth_expired: `That connect attempt expired — a connect link is good for ${OAUTH_PENDING_TTL_MINUTES} minutes. Press Connect new and try again.`,
+	missing_code: 'The provider did not send an authorization code back. Start the connection again.',
+	oauth_failed: 'Could not finish connecting — try again.'
+};
 
 /**
  * The fixed, user-facing copy for a failure we recognise, or null when the only
@@ -12,6 +25,8 @@ import { isThreadsAuthFailure, isThreadsMediaFetchFailure } from './threads-erro
 export function humanizedCause(raw: string | null | undefined): string | null {
 	if (!raw) return null;
 	const s = raw.toLowerCase();
+	const oauthCode = OAUTH_CALLBACK_ERRORS[s.trim()];
+	if (oauthCode) return oauthCode;
 	if (
 		s.includes('401') ||
 		s.includes('unauthorized') ||

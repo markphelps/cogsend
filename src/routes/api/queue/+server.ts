@@ -1,15 +1,24 @@
 import type { RequestHandler } from './$types';
 import { handleError, ok } from '$lib/server/http';
+import {
+	QUEUE_LIST_LIMIT,
+	QUEUE_LIST_MAX_LIMIT,
+	loadQueueList,
+	parseListLimit
+} from '$lib/server/post-list';
 import { requireScope, requireUser } from '$lib/server/require';
-import { listQueue } from '$lib/server/api/operations';
 
 export const GET: RequestHandler = async ({ locals, url }) => {
 	try {
 		const user = requireUser(locals.user);
 		requireScope(locals, 'read');
-		const requested = parseInt(url?.searchParams.get('limit') ?? '', 10);
-		return ok(await listQueue(locals, user.id, requested));
-	} catch (error) {
-		return handleError(error);
+		const limit = parseListLimit(
+			url?.searchParams.get('limit'),
+			QUEUE_LIST_LIMIT,
+			QUEUE_LIST_MAX_LIMIT
+		);
+		return ok(await loadQueueList(locals.db, user.id, limit));
+	} catch (err) {
+		return handleError(err);
 	}
 };

@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, or } from 'drizzle-orm';
+import { and, count, eq, isNull, lt, or } from 'drizzle-orm';
 import { generateBackupCodes, normalizeBackupCode } from '$lib/domain/backup-codes';
 import { formatSecretGroups } from '$lib/domain/base32';
 import { randomHex } from '$lib/domain/bytes';
@@ -362,14 +362,17 @@ export async function purgeExpiredMfaChallenges(db: AppDb, now = new Date()) {
 }
 
 export async function totpStatus(db: AppDb, userId: string) {
-	const user = await first(db.select().from(users).where(eq(users.id, userId)));
-	const unused = await db
-		.select()
+	const user = await first(
+		db.select({ totpEnabled: users.totpEnabled }).from(users).where(eq(users.id, userId))
+	);
+	const [unused] = await db
+		.select({ n: count() })
 		.from(totpBackupCodes)
 		.where(and(eq(totpBackupCodes.userId, userId), isNull(totpBackupCodes.usedAt)));
+	const remaining = typeof unused?.n === 'bigint' ? Number(unused.n) : Number(unused?.n ?? 0);
 	return {
 		enabled: Boolean(user?.totpEnabled),
-		backupRemaining: unused.length
+		backupRemaining: Number.isFinite(remaining) ? remaining : 0
 	};
 }
 

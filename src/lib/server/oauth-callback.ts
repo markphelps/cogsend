@@ -4,7 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import type { PlatformId } from '$lib/domain/platforms';
 import { SESSION_COOKIE } from './auth';
 import { encryptJson } from './crypto';
-import { first, newId, type AppDb } from './db/client';
+import { first, newId, parseJson, type AppDb } from './db/client';
 import { connections, oauthPending } from './db/schema';
 import type { AppEnv } from './env';
 import { splitOAuthState, verifyOAuthState } from './oauth-state';
@@ -31,12 +31,35 @@ export interface OAuthCallbackOptions {
 	pendingMarker?: string;
 	/** Also match an existing row on its instance URL (one row per instance). */
 	matchInstanceUrl?: boolean;
+	/**
+	 * The `meta` key holding the platform's own account id. Reconnecting
+	 * matches on it first, so an account whose handle changed revives its row
+	 * (and history) instead of gaining a duplicate. Rows stored before the id
+	 * was kept still match on the handle.
+	 */
+	accountIdKey?: string;
 	complete(input: {
 		pending: PendingRow;
 		code: string;
 		db: AppDb;
 		env: AppEnv;
 	}): Promise<CallbackExchange>;
+}
+
+/**
+ * The stored row for this account: by the platform's account id when both
+ * sides have one, otherwise by handle, as it always matched.
+ */
+export function findExistingConnection<
+	T extends { handle: string | null; metaJson: string | null }
+>(candidates: T[], handle: string, accountId: unknown, accountIdKey: string | undefined) {
+	if (accountIdKey && typeof accountId === 'string' && accountId) {
+		const byId = candidates.find(
+			(c) => parseJson<Record<string, unknown>>(c.metaJson, {})[accountIdKey] === accountId
+		);
+		if (byId) return byId;
+	}
+	return candidates.find((c) => (c.handle ?? '') === handle);
 }
 
 /**
@@ -92,20 +115,23 @@ export function createOAuthCallback(opts: OAuthCallbackOptions): RequestHandler 
 				status: 'active' as const,
 				updatedAt: now
 			};
-			const existing = await first(
-				locals.db
-					.select()
-					.from(connections)
-					.where(
-						and(
-							eq(connections.userId, pending.userId),
-							eq(connections.platform, opts.platform),
-							eq(connections.handle, exchanged.handle || ''),
-							...(opts.matchInstanceUrl
-								? [eq(connections.instanceUrl, exchanged.instanceUrl || '')]
-								: [])
-						)
+			const candidates = await locals.db
+				.select()
+				.from(connections)
+				.where(
+					and(
+						eq(connections.userId, pending.userId),
+						eq(connections.platform, opts.platform),
+						...(opts.matchInstanceUrl
+							? [eq(connections.instanceUrl, exchanged.instanceUrl || '')]
+							: [])
 					)
+				);
+			const existing = findExistingConnection(
+				candidates,
+				exchanged.handle || '',
+				opts.accountIdKey ? exchanged.meta[opts.accountIdKey] : undefined,
+				opts.accountIdKey
 			);
 			if (existing) {
 				await locals.db.update(connections).set(data).where(eq(connections.id, existing.id));

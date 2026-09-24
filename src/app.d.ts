@@ -3,6 +3,7 @@ import type { AppEnv } from '$lib/server/env';
 import type { SessionUser } from '$lib/server/auth';
 import type { MediaStore } from '$lib/server/media';
 import type { QueueLike } from '$lib/server/scheduler';
+import type { SubrequestBudget } from '$lib/server/budget';
 
 declare global {
 	/** Injected by vite.config.ts from package.json — the running version. */
@@ -30,6 +31,8 @@ declare global {
 			// API-key scopes (null for sessions and the env API_TOKEN operator
 			// key, which stay unrestricted). Null = no scope check.
 			apiKeyScopes: string[] | null;
+			// This request's subrequest count (D1, R2, queue, provider fetches).
+			budget: SubrequestBudget;
 		}
 	}
 }

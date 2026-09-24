@@ -257,13 +257,32 @@ test('a platform without app credentials shows its setup steps, not a failure', 
 	await expect(
 		page.getByRole('heading', { name: `${probe.name} isn't enabled yet` })
 	).toBeVisible();
-	await expect(page.getByTestId('setup-callback-uri')).toContainText(
-		`/api/connections/${probe.id}/callback`
-	);
+	// The steps stay collapsed so the panel is three lines and two rows, not a
+	// wall of text: the redirect URI lives under step 1, the secrets under 2.
+	await expect(page.getByTestId('setup-callback-uri')).toBeHidden();
+	await page.getByTestId('setup-step-1').click();
+	const redirectUri = page.getByTestId('setup-callback-uri');
+	await expect(redirectUri).toBeVisible();
+	await expect(redirectUri).toContainText(`/api/connections/${probe.id}/callback`);
+	await page.getByTestId('setup-step-2').click();
 	await expect(page.getByTestId('setup-command')).toHaveText(probe.command);
 	for (const secret of probe.secrets) {
 		await expect(page.getByText(secret, { exact: true })).toBeVisible();
 	}
+	// The other way to set them, for a reader without the checkout: the panel
+	// must not send someone to a command they cannot run.
+	await expect(page.getByTestId('platform-setup-panel')).toContainText('Cloudflare dashboard');
+	// Copying is the point of the block: the value has to reach the clipboard,
+	// not just look like it did.
+	await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+	const copyUri = page.getByRole('button', { name: 'Copy the redirect URI' });
+	await copyUri.click();
+	// Icon-only button: the confirmation is the tick, announced to a screen
+	// reader through the status region rather than drawn as text.
+	await expect(page.getByTestId('copy-status').first()).toHaveText('Copied to clipboard');
+	expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+		((await redirectUri.textContent()) ?? '').trim()
+	);
 	// The card is a setup entry point, not a connect attempt.
 	expect(connectCalls).toBe(0);
 
@@ -282,6 +301,19 @@ test('a platform without app credentials shows its setup steps, not a failure', 
 	await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
+test('a stale callback error is explained, then dropped from the URL', async () => {
+	test.setTimeout(120_000);
+	// The callback redirects to /accounts?error=<code>. Before this, the code was
+	// echoed verbatim and stayed in the address bar, so a reload replayed an old
+	// failure next to a connection that had since succeeded.
+	await page.goto('/accounts?error=oauth_expired');
+	const alert = page.getByRole('alert');
+	await expect(alert).toContainText(/expired/i);
+	await expect(alert).not.toContainText('oauth_expired');
+	await expect(page).toHaveURL(/\/accounts$/);
+	await page.reload();
+	await expect(page.getByRole('alert')).toHaveCount(0);
+});
 test('settings defaults persist', async () => {
 	await page.goto('/settings');
 	// The version is injected at build time and shown here, so a bug report can
@@ -561,7 +593,14 @@ test('a saved draft restores the accounts it was written for', async () => {
 	await expect(page.getByTestId('segment-input-0')).toHaveValue('selection restore probe', {
 		timeout: 60000
 	});
-	await page.getByTestId('destinations-toggle').click();
+	// The value above is server-rendered, so it can be on screen before Svelte
+	// has hydrated. A bare click here is lost and the popover never opens; this
+	// is the race clickUntilVisible exists for (see tests/e2e/e2e-env.ts).
+	await clickUntilVisible(
+		page,
+		page.getByTestId('destinations-toggle'),
+		page.locator('button[title="Bluesky: test.bsky.social"]')
+	);
 	await expect(page.locator('button[title="Bluesky: test.bsky.social"]')).toHaveAttribute(
 		'aria-pressed',
 		'true',
@@ -853,6 +892,69 @@ test('overflow paste auto-splits across cards', async () => {
 			expect(n).toBeLessThanOrEqual(max);
 		}
 	}
+});
+
+/**
+ * The link preview's title is `truncate` (nowrap), so it feeds the card's
+ * min-content width; without min-w-0 on the card that single line stretched the
+ * card past the composer column and the preview visually left the thread card.
+ * The OG payload is stubbed because the regression needs only a long
+ * single-line title — the real endpoint must not decide whether it reproduces.
+ */
+test('a long link preview stays inside its thread card', async () => {
+	await page.goto('/compose');
+	await page.route('**/api/link-preview*', (route) =>
+		route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify({
+				url: 'https://example.com/long-title',
+				title: `Example article — ${'a long unbroken page title '.repeat(12)}`,
+				description: 'A description that wraps inside the card.',
+				image: null,
+				siteName: 'example.com'
+			})
+		})
+	);
+	// The second card is what makes the two widths comparable, so a
+	// thread-capable destination has to be selected: a stored default from an
+	// earlier test can leave only LinkedIn on.
+	await clickUntilVisible(
+		page,
+		page.getByTestId('destinations-toggle'),
+		page.locator('button[title="Bluesky: test.bsky.social"]')
+	);
+	const bluesky = page.locator('button[title="Bluesky: test.bsky.social"]');
+	if ((await bluesky.getAttribute('aria-pressed')) !== 'true') await bluesky.click();
+	await page.keyboard.press('Escape');
+
+	await fillUntilKept(page.getByTestId('segment-input-0'), 'first post');
+	await clickUntilVisible(
+		page,
+		page.getByTestId('add-thread-post'),
+		page.getByTestId('segment-input-1')
+	);
+	await fillUntilKept(page.getByTestId('segment-input-1'), 'https://example.com/long-title');
+	await expect(page.getByTestId('link-preview')).toBeVisible();
+
+	const measured = await page.evaluate(() => {
+		const box = (id: string) =>
+			document.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect();
+		const plain = box('segment-card-0');
+		const linked = box('segment-card-1');
+		const preview = box('link-preview');
+		return {
+			plainWidth: Math.round(plain.width),
+			linkedWidth: Math.round(linked.width),
+			previewOverhang: Math.round(preview.right - linked.right),
+			sideways: document.documentElement.scrollWidth - window.innerWidth
+		};
+	});
+	// A card with a link is no wider than one without, its preview stays inside
+	// it, and nothing pushes the document sideways.
+	expect(measured.linkedWidth).toBe(measured.plainWidth);
+	expect(measured.previewOverhang).toBeLessThanOrEqual(0);
+	expect(measured.sideways).toBeLessThanOrEqual(0);
 });
 
 test('Alt+Arrow keys reorder thread posts and follow the media', async () => {

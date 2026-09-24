@@ -56,6 +56,7 @@ import {
 } from '$lib/server/publish-plan';
 import { refreshDraftStatus, publishTarget } from '$lib/server/publish';
 import { humanizedCause } from '$lib/domain/human-error';
+import type { SubrequestBudget } from '$lib/server/budget';
 import { randomHex } from '$lib/domain/bytes';
 import { validateImageUpload, validateVideoUpload } from '$lib/domain/media-limits';
 import { validatePollConfig } from '$lib/domain/poll';
@@ -63,6 +64,7 @@ import { assertSafeStorageKey } from '$lib/server/media';
 import { STALE_CLAIM_MS } from '$lib/domain/due-jobs';
 import { ApiOperationError } from '$lib/server/api/operation-error';
 export type OperationContext = Pick<App.Locals, 'db' | 'env' | 'media'> & {
+	budget?: SubrequestBudget;
 	waitUntil?: (promise: Promise<unknown>) => void;
 };
 function invalid(message: string, status = 400, details?: Record<string, unknown>): never {
@@ -782,6 +784,8 @@ export async function publishDraft(
 	const ensured = await ensureTargets(ctx.db, draftId, userConnections, 'now', null, now);
 	const results = [];
 	let stopped: string | null = null;
+	let deferring = false;
+	let attempted = 0;
 	for (const item of ensured) {
 		const connection = userConnections.find((row) => row.id === item.target.connectionId);
 		if (!connection) continue;
@@ -814,10 +818,45 @@ export async function publishDraft(
 			});
 			continue;
 		}
+		if (deferring) {
+			results.push({
+				targetId: item.target.id,
+				connectionId: connection.id,
+				platform: connection.platform,
+				handle: connection.handle,
+				displayName: connection.displayName,
+				status: 'pending',
+				permalink: null,
+				error: null,
+				skipped: true,
+				deferred: true
+			});
+			continue;
+		}
 		try {
-			const task = publishTarget(ctx.db, ctx.env, ctx.media, item.target.id);
+			const task = publishTarget(ctx.db, ctx.env, ctx.media, item.target.id, {
+				budget: ctx.budget,
+				mustTry: attempted === 0
+			});
 			ctx.waitUntil?.(task.then(() => undefined).catch(() => undefined));
 			const result = await task;
+			if (result.deferred) {
+				deferring = true;
+				results.push({
+					targetId: item.target.id,
+					connectionId: connection.id,
+					platform: connection.platform,
+					handle: connection.handle,
+					displayName: connection.displayName,
+					status: 'pending',
+					permalink: null,
+					error: null,
+					skipped: true,
+					deferred: true
+				});
+				continue;
+			}
+			attempted += 1;
 			const row = await first(
 				ctx.db.select().from(publishTargets).where(eq(publishTargets.id, item.target.id))
 			);

@@ -9,10 +9,13 @@
  * with the cron trigger, the tick token, and the cached release check — see the
  * constants below and their owners (tick-token.ts, release.ts).
  *
- * Cached per database handle in module scope: a deployment that pins APP_URL
- * never reads for it, and everything else should pay once per isolate rather
- * than once per request. The cache is keyed weakly so a stale value cannot
- * outlive the binding it came from (tests, hot reloads).
+ * Cached per database handle in module scope, for a minute at a time: a
+ * deployment that pins APP_URL never reads for it, and everything else should
+ * not pay a query per request. The expiry matters because a Worker runs many
+ * isolates, and a write only updates the cache of the isolate that made it —
+ * without one, a rename would never reach the others. The cache is keyed weakly
+ * so a value cannot outlive the binding it came from (tests, hot reloads).
+ * Security-relevant reads (the tick token) pass `fresh` and skip it.
  */
 import { eq } from 'drizzle-orm';
 import {
@@ -22,6 +25,7 @@ import {
 } from '$lib/domain/deploy-cron';
 import { first, type AppDb } from './db/client';
 import { appSettings } from './db/schema';
+import { rawBinding } from './budget';
 
 export const APP_URL_SETTING = 'app_url';
 export const APP_NAME_SETTING = 'app_name';
@@ -32,35 +36,56 @@ export const CRON_STATE_SETTING = 'cron_state';
 export type { DeployCronState, DeployCronStatus };
 
 type CacheKey = object;
+type CacheEntry = { value: string | null; at: number };
 
-const cache = new WeakMap<CacheKey, Map<string, string | null>>();
+/** How long an isolate trusts a value it read or wrote. */
+export const APP_SETTING_CACHE_MS = 60_000;
 
-/** The drizzle handle is rebuilt per request; the D1 binding behind it is not. */
+const cache = new WeakMap<CacheKey, Map<string, CacheEntry>>();
+
+/** The drizzle handle is rebuilt per request; the D1 binding behind it is not
+ *  (each request wraps it to count calls, hence the unwrap). */
 function cacheKey(db: AppDb): CacheKey | null {
 	const session = (db as unknown as { session?: { client?: unknown } }).session;
-	const client = session?.client;
+	const client = rawBinding(session?.client);
 	return client && typeof client === 'object' ? (client as CacheKey) : null;
 }
 
-function memoFor(db: AppDb): Map<string, string | null> | null {
+function memoFor(db: AppDb): Map<string, CacheEntry> | null {
 	const key = cacheKey(db);
 	if (!key) return null;
 	const existing = cache.get(key);
 	if (existing) return existing;
-	const created = new Map<string, string | null>();
+	const created = new Map<string, CacheEntry>();
 	cache.set(key, created);
 	return created;
 }
 
+function freshEntry(memo: Map<string, CacheEntry> | null, key: string): CacheEntry | undefined {
+	const entry = memo?.get(key);
+	if (!entry) return undefined;
+	if (Date.now() - entry.at >= APP_SETTING_CACHE_MS) {
+		memo?.delete(key);
+		return undefined;
+	}
+	return entry;
+}
+
 /** A stored value, or null when it is missing or blank. */
-export async function readAppSetting(db: AppDb, key: string): Promise<string | null> {
+export async function readAppSetting(
+	db: AppDb,
+	key: string,
+	options: { fresh?: boolean } = {}
+): Promise<string | null> {
 	const memo = memoFor(db);
-	const cached = memo?.get(key);
-	if (cached !== undefined) return cached;
+	if (!options.fresh) {
+		const cached = freshEntry(memo, key);
+		if (cached) return cached.value;
+	}
 	try {
 		const row = await first(db.select().from(appSettings).where(eq(appSettings.key, key)));
 		const value = row?.value?.trim() ? row.value : null;
-		memo?.set(key, value);
+		memo?.set(key, { value, at: Date.now() });
 		return value;
 	} catch {
 		// Schema not bootstrapped yet, or an older database without the table:
@@ -73,8 +98,10 @@ export async function readAppSetting(db: AppDb, key: string): Promise<string | n
 export async function writeAppSetting(db: AppDb, key: string, value: string): Promise<void> {
 	const stored = value.trim();
 	const memo = memoFor(db);
-	if (memo?.get(key) === (stored || null)) return;
-	memo?.set(key, stored || null);
+	// Skipping an unchanged write is only safe while this isolate's copy is
+	// recent: another isolate may have written something else since.
+	if (freshEntry(memo, key)?.value === (stored || null)) return;
+	memo?.set(key, { value: stored || null, at: Date.now() });
 	try {
 		await db
 			.insert(appSettings)

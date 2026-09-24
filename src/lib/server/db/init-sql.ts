@@ -1,3 +1,6 @@
+import { fnv1a } from '$lib/domain/hash';
+import { rawBinding } from '../budget';
+
 /** Bootstrap DDL for first request. Squashed to latest: 0001 + 0002 + 0004-final + 0005 + 0007 + 0008 + 0009 + 0010 + 0012 + 0014 + 0015 + 0016 + 0017 (+ 0003 transient). Keep in lockstep with drizzle/*.sql; `tests/schema-bootstrap.test.ts` fails when an index a migration creates is missing here. */
 export const INIT_SQL = `
 CREATE TABLE IF NOT EXISTS \`users\` (
@@ -39,8 +42,7 @@ CREATE TABLE IF NOT EXISTS \`oauth_pending\` (
 	\`client_id\` text NOT NULL,
 	\`client_secret_enc\` text NOT NULL,
 	\`expires_at\` integer NOT NULL,
-	\`created_at\` integer NOT NULL,
-	FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON DELETE CASCADE
+	\`created_at\` integer NOT NULL
 );
 CREATE INDEX IF NOT EXISTS \`oauth_pending_expires_idx\` ON \`oauth_pending\` (\`expires_at\`);
 CREATE INDEX IF NOT EXISTS \`oauth_pending_user_idx\` ON \`oauth_pending\` (\`user_id\`);
@@ -236,10 +238,20 @@ async function tableColumns(d1: D1Database, table: string): Promise<Set<string>>
 	return new Set((res.results ?? []).map((r) => r.name));
 }
 
-async function addColumnIfMissing(d1: D1Database, table: string, name: string, ddl: string) {
+/** One `table_info` per table, then only the columns that are actually missing. */
+async function addMissingColumns(
+	d1: D1Database,
+	table: string,
+	columns: { name: string; ddl: string }[]
+) {
 	const cols = await tableColumns(d1, table);
-	if (cols.has(name)) return;
-	await d1.prepare(`ALTER TABLE ${table} ADD COLUMN ${ddl}`).run();
+	// No rows means the table is not there yet. The CREATE that follows builds
+	// it with these columns, so an ALTER here would only fail.
+	if (cols.size === 0) return;
+	for (const column of columns) {
+		if (cols.has(column.name)) continue;
+		await d1.prepare(`ALTER TABLE ${table} ADD COLUMN ${column.ddl}`).run();
+	}
 }
 
 // Memoized per binding: Workers isolates reuse the same D1 binding across
@@ -248,49 +260,48 @@ async function addColumnIfMissing(d1: D1Database, table: string, name: string, d
 const ensuredBindings = new WeakMap<object, Promise<void>>();
 
 export function ensureSchemaOnce(d1: D1Database): Promise<void> {
-	const existing = ensuredBindings.get(d1);
+	// Keyed on the real binding: each request hands in its own counting
+	// wrapper around it (see $lib/server/budget).
+	const key = rawBinding(d1);
+	const existing = ensuredBindings.get(key);
 	if (existing) return existing;
 	const run = ensureSchema(d1).catch((err) => {
-		ensuredBindings.delete(d1);
+		ensuredBindings.delete(key);
 		throw err;
 	});
-	ensuredBindings.set(d1, run);
+	ensuredBindings.set(key, run);
 	return run;
 }
 
-export async function ensureSchema(d1: D1Database) {
-	// Best-effort FK enforcement: D1/SQLite defaults foreign_keys OFF per
-	// connection. Tests enable it explicitly; prod must too or ON DELETE
-	// CASCADE silently no-ops. Failure is non-fatal (some drivers reject PRAGMA).
-	try {
-		await d1.exec('PRAGMA foreign_keys = ON');
-	} catch {
-		// ignore; enforcement depends on engine default
+/**
+ * Columns a migration added after the first release's bootstrap DDL, added
+ * here too for databases that bootstrapped before them.
+ */
+const COLUMN_BACKFILLS: Array<{ table: string; columns: { name: string; ddl: string }[] }> = [
+	{
+		table: 'users',
+		columns: [
+			{ name: 'totp_enabled', ddl: 'totp_enabled integer NOT NULL DEFAULT 0' },
+			{ name: 'totp_secret_enc', ddl: 'totp_secret_enc text' },
+			{ name: 'totp_enrolled_at', ddl: 'totp_enrolled_at integer' },
+			{ name: 'totp_last_step', ddl: 'totp_last_step integer' },
+			{ name: 'settings_json', ddl: 'settings_json text' },
+			{ name: 'display_name', ddl: 'display_name text' }
+		]
+	},
+	{
+		table: 'drafts',
+		columns: [{ name: 'selected_connection_ids', ddl: 'selected_connection_ids text' }]
+	},
+	{ table: 'api_keys', columns: [{ name: 'scopes', ddl: 'scopes text' }] },
+	{
+		table: 'sessions',
+		columns: [{ name: 'mfa_verified', ddl: 'mfa_verified integer NOT NULL DEFAULT 0' }]
 	}
-	const row = await d1
-		.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
-		.first();
-	if (!row) {
-		await execStatements(d1, INIT_SQL);
-		return;
-	}
-	await addColumnIfMissing(d1, 'users', 'totp_enabled', 'totp_enabled integer NOT NULL DEFAULT 0');
-	await addColumnIfMissing(d1, 'users', 'totp_secret_enc', 'totp_secret_enc text');
-	await addColumnIfMissing(d1, 'users', 'totp_enrolled_at', 'totp_enrolled_at integer');
-	await addColumnIfMissing(d1, 'users', 'totp_last_step', 'totp_last_step integer');
-	await addColumnIfMissing(d1, 'users', 'settings_json', 'settings_json text');
-	await addColumnIfMissing(d1, 'users', 'display_name', 'display_name text');
-	await addColumnIfMissing(d1, 'drafts', 'selected_connection_ids', 'selected_connection_ids text');
-	await addColumnIfMissing(d1, 'api_keys', 'scopes', 'scopes text');
-	await addColumnIfMissing(
-		d1,
-		'sessions',
-		'mfa_verified',
-		'mfa_verified integer NOT NULL DEFAULT 0'
-	);
-	await execStatements(
-		d1,
-		`
+];
+
+/** Tables a database bootstrapped by an older release may be missing. */
+const LEGACY_TABLES_SQL = `
 CREATE TABLE IF NOT EXISTS totp_backup_codes (
 	id text PRIMARY KEY NOT NULL,
 	user_id text NOT NULL,
@@ -337,12 +348,85 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS api_keys_hash_uq ON api_keys (key_hash);
 CREATE INDEX IF NOT EXISTS api_keys_user_idx ON api_keys (user_id);
-`
-	);
+`;
+
+/**
+ * Which bootstrap a database has had, stored in `app_settings`. Checking it is
+ * one query; the full check below is two dozen, and on the Workers Free plan
+ * every one of them comes out of the same 50-call budget a publish needs.
+ */
+export const SCHEMA_MARKER_KEY = 'schema_bootstrap';
+
+/**
+ * Derived from the DDL itself, so any change to the bootstrap (a new table,
+ * column or index) makes every database take the full path once more. The
+ * trailing label names the one step that is code rather than DDL.
+ */
+export const SCHEMA_FINGERPRINT = fnv1a(
+	[
+		INIT_SQL,
+		LEGACY_TABLES_SQL,
+		JSON.stringify(COLUMN_BACKFILLS),
+		BACKFILL_INDEXES.join('\n'),
+		'publish_targets_draft_conn_idx:unique'
+	].join('\n--\n')
+).toString(16);
+
+async function schemaIsCurrent(d1: D1Database): Promise<boolean> {
+	try {
+		const row = await d1
+			.prepare('SELECT value FROM app_settings WHERE key = ?')
+			.bind(SCHEMA_MARKER_KEY)
+			.first<{ value: string }>();
+		return row?.value === SCHEMA_FINGERPRINT;
+	} catch {
+		// No app_settings table yet: an older or empty database.
+		return false;
+	}
+}
+
+async function recordSchema(d1: D1Database) {
+	try {
+		await d1
+			.prepare(
+				'INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?) ' +
+					'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+			)
+			.bind(SCHEMA_MARKER_KEY, SCHEMA_FINGERPRINT, Date.now())
+			.run();
+	} catch {
+		// Only an optimisation: without the marker the next isolate runs the
+		// full (idempotent) check again.
+	}
+}
+
+export async function ensureSchema(d1: D1Database) {
+	// Best-effort FK enforcement: D1/SQLite defaults foreign_keys OFF per
+	// connection. Tests enable it explicitly; prod must too or ON DELETE
+	// CASCADE silently no-ops. Failure is non-fatal (some drivers reject PRAGMA).
+	try {
+		await d1.exec('PRAGMA foreign_keys = ON');
+	} catch {
+		// ignore; enforcement depends on engine default
+	}
+	if (await schemaIsCurrent(d1)) return;
+	const row = await d1
+		.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+		.first();
+	if (!row) {
+		await execStatements(d1, INIT_SQL);
+		await recordSchema(d1);
+		return;
+	}
+	for (const { table, columns } of COLUMN_BACKFILLS) {
+		await addMissingColumns(d1, table, columns);
+	}
+	await execStatements(d1, LEGACY_TABLES_SQL);
 	await ensureDraftConnUnique(d1);
 	for (const ddl of BACKFILL_INDEXES) {
 		await d1.prepare(ddl).run();
 	}
+	await recordSchema(d1);
 }
 
 async function ensureDraftConnUnique(d1: D1Database) {

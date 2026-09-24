@@ -5,6 +5,7 @@ import { unpackXPendingSecret, xExchangeCode } from '$lib/server/providers';
 export const GET = createOAuthCallback({
 	platform: 'x',
 	pendingMarker: 'x',
+	accountIdKey: 'xUserId',
 	async complete({ pending, code, env }) {
 		const packed = await decryptSecret(pending.clientSecretEnc, env.APP_ENCRYPTION_KEY);
 		const { clientSecret, codeVerifier } = unpackXPendingSecret(packed);

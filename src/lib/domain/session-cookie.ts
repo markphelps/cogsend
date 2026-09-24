@@ -45,16 +45,24 @@ export function nextSessionExpiry(now: Date, maxAgeSeconds: number): Date {
 // with a stolen cookie stays signed in for 30 days. Sessions idle longer
 // than this are destroyed on next use, regardless of expiresAt.
 export const SESSION_IDLE_MS = 24 * 60 * 60_000;
+// "Remember this browser" is a promise to survive a weekend away; a day would
+// break it. A week still ends a session nobody is using.
+export const SESSION_IDLE_REMEMBER_MS = 7 * 24 * 60 * 60_000;
 // lastSeenAt writes are throttled: at most one extra D1 write per window
 // of active use instead of one per request.
 export const SESSION_SEEN_WRITE_MS = 15 * 60_000;
 
-export function isSessionIdle(lastSeen: Date | null | undefined, now: Date): boolean {
+export function isSessionIdle(
+	lastSeen: Date | null | undefined,
+	now: Date,
+	remember = false
+): boolean {
 	// A session with no `last_seen_at` predates the column. Treat it as idle:
 	// there is no evidence it was used recently, and the alternative is letting
 	// it outlive the password that minted it.
 	if (!lastSeen) return true;
-	return now.getTime() - lastSeen.getTime() > SESSION_IDLE_MS;
+	const limit = remember ? SESSION_IDLE_REMEMBER_MS : SESSION_IDLE_MS;
+	return now.getTime() - lastSeen.getTime() > limit;
 }
 
 export function shouldTouchSeen(lastSeen: Date | null | undefined, now: Date): boolean {

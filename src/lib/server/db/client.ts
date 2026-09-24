@@ -12,8 +12,10 @@ export function createD1Db(d1: D1Database) {
  * unknown[], so callers destructure and cast positionally. Reads only: a
  * failed statement fails the whole batch.
  */
-export function batchQueries(db: AppDb, queries: unknown[]): Promise<unknown[]> {
+export async function batchQueries(db: AppDb, queries: unknown[]): Promise<unknown[]> {
 	const capable = db as unknown as { batch: (q: unknown[]) => Promise<unknown[]> };
+	// async so a driver that throws before returning a promise still rejects:
+	// callers attach .catch() and must not have the throw escape past it.
 	return capable.batch(queries);
 }
 

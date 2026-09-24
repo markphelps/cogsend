@@ -187,6 +187,175 @@ export function buildInsightSeries(opts: {
 }
 
 /**
+ * Half-open millisecond range for one chart bucket. `end === null` means no
+ * upper bound (the current window's last bucket also catches a future stamp).
+ * Ranges are already clipped to the rolling window `buildInsightSeries` uses,
+ * including the clamp of a stamp whose local day falls outside the keys.
+ */
+export interface InsightBound {
+	start: number;
+	end: number | null;
+}
+
+export interface InsightFrames {
+	sinceMs: number;
+	previousSinceMs: number;
+	currentLabels: string[];
+	previousLabels: string[];
+	currentBounds: InsightBound[];
+	previousBounds: InsightBound[];
+}
+
+const zonedFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function resolvedTimeZone(timeZone: string): string {
+	try {
+		new Intl.DateTimeFormat('en-CA', { timeZone }).format(0);
+		return timeZone;
+	} catch {
+		return 'UTC';
+	}
+}
+
+function zonedFormatter(timeZone: string): Intl.DateTimeFormat {
+	const zone = resolvedTimeZone(timeZone);
+	const cached = zonedFormatters.get(zone);
+	if (cached) return cached;
+	const fmt = new Intl.DateTimeFormat('en-US', {
+		timeZone: zone,
+		hourCycle: 'h23',
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit',
+		hour: '2-digit',
+		minute: '2-digit',
+		second: '2-digit'
+	});
+	zonedFormatters.set(zone, fmt);
+	return fmt;
+}
+
+function zonedParts(ms: number, timeZone: string) {
+	const parts = zonedFormatter(timeZone).formatToParts(new Date(ms));
+	const n = (type: Intl.DateTimeFormatPartTypes) =>
+		Number(parts.find((p) => p.type === type)?.value ?? '0');
+	let hour = n('hour');
+	// A few engines report midnight as 24:00 on the previous date.
+	if (hour === 24) hour = 0;
+	return {
+		year: n('year'),
+		month: n('month'),
+		day: n('day'),
+		hour,
+		minute: n('minute'),
+		second: n('second')
+	};
+}
+
+/** UTC instant of local midnight at the start of `key` (YYYY-MM-DD). */
+export function localDayStartMs(key: string, timeZone: string): number {
+	const [y, m, d] = key.split('-').map(Number);
+	const year = y ?? 1970;
+	const month = m ?? 1;
+	const day = d ?? 1;
+	let utc = Date.UTC(year, month - 1, day);
+	for (let i = 0; i < 4; i++) {
+		const p = zonedParts(utc, timeZone);
+		const got = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+		const want = Date.UTC(year, month - 1, day);
+		if (got === want) return utc;
+		utc += want - got;
+	}
+	return utc;
+}
+
+function windowKeys(nowMs: number, days: InsightRange, timeZone: string) {
+	const span = rangeSpanDays(days);
+	const todayKey = localDayKey(nowMs, timeZone);
+	const currentKeys: string[] = [];
+	for (let i = span - 1; i >= 0; i--) currentKeys.push(addDays(todayKey, -i));
+	const previousKeys = currentKeys.map((key) => addDays(key, -span));
+	return { span, currentKeys, previousKeys };
+}
+
+function boundsFor(
+	keys: string[],
+	timeZone: string,
+	weekly: boolean,
+	winStart: number,
+	winEnd: number | null
+): InsightBound[] {
+	const bucketCount = weekly ? keys.length / 7 : keys.length;
+	const startOf = (index: number) => localDayStartMs(keys[index] ?? keys[0]!, timeZone);
+	const bounds: InsightBound[] = [];
+	for (let i = 0; i < bucketCount; i++) {
+		const first = weekly ? i * 7 : i;
+		const next = weekly ? (i + 1) * 7 : i + 1;
+		let start = i === 0 ? winStart : startOf(first);
+		let end: number | null = next < keys.length ? startOf(next) : winEnd;
+		if (i === bucketCount - 1) end = winEnd;
+		if (start < winStart) start = winStart;
+		if (end != null && end > (winEnd ?? end)) end = winEnd;
+		if (end != null && start >= end) {
+			bounds.push({ start, end: start });
+			continue;
+		}
+		bounds.push({ start, end });
+	}
+	return bounds;
+}
+
+/**
+ * The same buckets as `buildInsightSeries`, as millisecond ranges a SQL
+ * `SUM(CASE …)` can count without pulling every target into the isolate.
+ * Calendar days stay in the account timezone, including DST.
+ */
+export function insightFrames(nowMs: number, days: InsightRange, timeZone: string): InsightFrames {
+	const weekly = bucketKind(days) === 'week';
+	const { span, currentKeys, previousKeys } = windowKeys(nowMs, days, timeZone);
+	const sinceMs = nowMs - span * DAY_MS;
+	const previousSinceMs = sinceMs - span * DAY_MS;
+	const labelsOf = (keys: string[]) =>
+		Array.from({ length: weekly ? keys.length / 7 : keys.length }, (_, i) =>
+			labelFor(keys[weekly ? i * 7 : i] ?? keys[0]!)
+		);
+	return {
+		sinceMs,
+		previousSinceMs,
+		currentLabels: labelsOf(currentKeys),
+		previousLabels: labelsOf(previousKeys),
+		currentBounds: boundsFor(currentKeys, timeZone, weekly, sinceMs, null),
+		previousBounds: boundsFor(previousKeys, timeZone, weekly, previousSinceMs, sinceMs)
+	};
+}
+
+/** Place rows into `insightFrames` bounds. Used to prove the ranges match the series. */
+export function tallyInsightFrames(
+	currentRows: InsightTargetRow[],
+	previousRows: InsightTargetRow[],
+	frames: InsightFrames
+): { current: InsightBucket[]; previous: InsightBucket[] } {
+	const fill = (rows: InsightTargetRow[], labels: string[], bounds: InsightBound[]) => {
+		const buckets = labels.map((label) => ({ label, published: 0, failed: 0 }));
+		for (const row of rows) {
+			if (row.status !== 'published' && row.status !== 'failed') continue;
+			const idx = bounds.findIndex(
+				(b) => row.updatedAtMs >= b.start && (b.end == null || row.updatedAtMs < b.end)
+			);
+			const bucket = buckets[idx];
+			if (!bucket) continue;
+			if (row.status === 'published') bucket.published += 1;
+			else bucket.failed += 1;
+		}
+		return buckets;
+	};
+	return {
+		current: fill(currentRows, frames.currentLabels, frames.currentBounds),
+		previous: fill(previousRows, frames.previousLabels, frames.previousBounds)
+	};
+}
+
+/**
  * Short, stable label for a failure, so the compaction of dozens of raw
  * provider messages into a handful of reasons is deterministic (and testable).
  * Threads reuses the shared Meta-error classifiers, so this can never drift

@@ -177,6 +177,49 @@ describe('ensureTargets', () => {
 		expect(all).toHaveLength(1);
 	});
 
+	it('reports a published row without a remote id as published, not in flight', async () => {
+		const now = new Date();
+		const draft3 = newId();
+		await db.insert(drafts).values({
+			id: draft3,
+			userId,
+			baseBody: 'no id came back',
+			status: 'published',
+			createdAt: now,
+			updatedAt: now
+		});
+		const publishedId = newId();
+		await db.insert(publishTargets).values({
+			id: publishedId,
+			draftId: draft3,
+			connectionId: connId,
+			status: 'published',
+			remotePostId: null,
+			attemptCount: 1,
+			createdAt: now,
+			updatedAt: now
+		});
+		const [row] = await ensureTargets(
+			db,
+			draft3,
+			[
+				{
+					id: connId,
+					platform: 'mastodon',
+					handle: 'u@mastodon.test',
+					displayName: null,
+					status: 'active'
+				}
+			],
+			'now',
+			null,
+			now
+		);
+		expect(row.alreadyPublished).toBe(true);
+		expect(row.inFlight).toBe(false);
+		expect(row.target.status).toBe('published');
+	});
+
 	it('treats fresh publishing as in-flight and stale publishing as reusable', async () => {
 		const now = new Date();
 		const draft3 = newId();

@@ -177,23 +177,9 @@ curl -s -X POST "$APP_URL/api/drafts/DRAFT_ID/publish" \
 
 ## Publishing behaviour
 
-- Publishing the same draft and account twice reuses the row. Already-published
-  accounts come back `skipped: true`.
-- A publish that is still running on that account answers **409** with
-  `inFlight` (the connection ids); wait, then try again.
-- A retried segment carries the same platform-side id as its first attempt, so a
-  thread that failed halfway does not double-post what already went out
-  (Mastodon remembers the id for an hour, Bluesky refuses to overwrite the
-  record).
-- Sending several connection ids in one request publishes them in order. If the
-  request runs out of its per-invocation budget (Workers Free allows 50 database
-  statements), it answers `200` with `stopped: true`, `stoppedError`, and the
-  results it did get. Accounts after the last entry were not completed and are
-  still due, so send those ids again. A target interrupted by the failure is
-  left retryable, never `publishing`; a `500` means nothing was recorded, so
-  check the draft before retrying.
-- Do not call `/api/targets/:id/retry` unless the row is `failed` (or a stuck
-  `publishing` row older than 15 minutes).
-- Schedule returns **409** if that account is already published or still
-  publishing. Check `error`, `alreadyPublished`, and `inFlight` instead of
-  treating HTTP 200 as “it was scheduled.”
+- Publishing the same draft and account twice reuses the row. Already-published accounts come back `skipped: true`.
+- A publish that is still running on that account answers **409** with `inFlight` (the connection ids) — wait, then try again.
+- A retried segment carries the same platform-side id as its first attempt, so a thread that failed half-way does not double-post what already went out (Mastodon remembers the id for an hour, Bluesky refuses to overwrite the record).
+- Sending several connection ids in one request publishes them in order. The first always runs; each further one runs only if it fits in what is left of the request's Cloudflare call budget (50 on Workers Free, see `SUBREQUEST_LIMIT` in [Configuration](configuration.md#secrets)). The ones that don't fit come back with `status: "pending"` and `deferred: true`. They are already due and go out on the next scheduler tick, so don't send those ids again. For the fastest results, send one connection id per request. If the request nevertheless runs out of its per-invocation budget (Workers Free allows 50 database statements), it answers `200` with `stopped: true`, `stoppedError`, and the results it did get. Accounts after the last completed entry were not completed and are still due, so send those ids again. A target interrupted by the failure is left retryable, never `publishing`; a `500` means nothing was recorded, so check the draft before retrying.
+- Do not call `/api/targets/:id/retry` unless the row is `failed` (or a stuck `publishing` row older than 15 minutes).
+- Schedule returns **409** if that account is already published or still publishing. Check `error`, `alreadyPublished`, and `inFlight` instead of treating HTTP 200 as "it was scheduled".

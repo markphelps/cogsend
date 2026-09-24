@@ -1,30 +1,14 @@
-import { eq } from 'drizzle-orm';
 import type { LayoutServerLoad } from './$types';
-import { first } from '$lib/server/db/client';
-import { users } from '$lib/server/db/schema';
-import { parseProfileSettings } from '$lib/domain/profile-settings';
 import { readStoredAppName } from '$lib/server/app-settings';
 
 export const load: LayoutServerLoad = async ({ locals }) => {
-	let displayName: string | null = null;
-	let profilePictureUrl: string | null = null;
-	if (locals.user) {
-		const row = await first(
-			locals.db
-				.select({ displayName: users.displayName, settingsJson: users.settingsJson })
-				.from(users)
-				.where(eq(users.id, locals.user.id))
-		).catch(() => null);
-		displayName = row?.displayName ?? null;
-		profilePictureUrl = parseProfileSettings(row?.settingsJson).profilePictureUrl;
-	}
-	// The name set in Settings → Instance wins; the APP_NAME var (and the
-	// built-in default) is the fallback, and the cached read is per isolate.
+	// Name and photo ride along on the session read in hooks, so this load
+	// does not query the user again.
 	const storedAppName = await readStoredAppName(locals.db);
 	return {
 		user: locals.user,
-		displayName,
-		profilePictureUrl,
+		displayName: locals.user?.displayName ?? null,
+		profilePictureUrl: locals.user?.profilePictureUrl ?? '',
 		appName: storedAppName ?? locals.env.APP_NAME
 	};
 };

@@ -232,6 +232,9 @@ export interface PlatformProvider {
 			 *  response is recognised by the platform instead of posting twice.
 			 *  Providers that support it use it; the rest ignore it. */
 			idempotencyKey?: (segmentIndex: number) => string;
+			/** The same guarantee for AT Protocol, where it has to be a record
+			 *  key of the collection's declared type (a TID for posts). */
+			recordKey?: (segmentIndex: number) => string;
 		}
 	): Promise<PublishResult>;
 	/**

@@ -70,7 +70,10 @@ export default {
 	async queue(batch, env, ctx) {
 		for (const msg of batch.messages) {
 			const res = await cogsendInternal(worker_default, env, ctx, '/api/internal/publish', msg.body);
-			if (!res || !res.ok) msg.retry();
+			// Only infrastructure failures land here (a platform failure is
+			// rescheduled by the app and answers 200). Give the cause a moment
+			// to clear instead of redelivering at once.
+			if (!res || !res.ok) msg.retry({ delaySeconds: 30 });
 			else msg.ack();
 		}
 	}

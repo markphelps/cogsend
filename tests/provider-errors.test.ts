@@ -98,6 +98,22 @@ describe('refreshImpossibleReason', () => {
 		).toMatch(/reconnect/);
 	});
 
+	it('a token without refresh material keeps publishing until it actually expires', () => {
+		// Self-serve LinkedIn apps get no refresh token at all: a 60-day token
+		// with days left must not be written off early.
+		const threeDays = Date.now() + 3 * 24 * 60 * 60_000;
+		expect(
+			getProvider('linkedin').refreshImpossibleReason?.({ accessToken: 'a', expiresAt: threeDays })
+		).toBeNull();
+		expect(
+			getProvider('x').refreshImpossibleReason?.({
+				accessToken: 'a',
+				expiresAt: Date.now() + 60_000
+			})
+		).toBeNull();
+		expect(getProvider('linkedin').refreshImpossibleReason?.({ accessToken: 'a' })).toBeNull();
+	});
+
 	it('providers without refreshable tokens omit the check', () => {
 		expect(getProvider('mastodon').refreshImpossibleReason).toBeUndefined();
 		expect(getProvider('bluesky').refreshImpossibleReason).toBeUndefined();

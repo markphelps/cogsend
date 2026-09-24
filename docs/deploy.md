@@ -96,7 +96,11 @@ cogsend-media` makes the bucket. Otherwise the deploy creates both.
 Optional secrets — `API_TOKEN` for scripts, `SCHEDULER_SECRET` for an external
 pinger, the OAuth client ids, Resend for failure emails, `MEDIA_PUBLIC_BASE_URL`
 for Meta's crawler — are listed under [Configuration](configuration.md#secrets). Upload them in one go
-with `npm run secrets:put`.
+with `npm run secrets:put`, which reads them from `.dev.vars` and then reads the
+Worker's own secret list back to confirm what landed. Secrets take effect
+immediately from the CLI, so a deploy is not what makes them live; in the
+dashboard (Workers & Pages → your Worker → Settings → Variables and Secrets →
+Add → **Secret**) press **Deploy** to apply them.
 
 Keep using `scripts/wrangler.mjs` instead of plain `npx wrangler` so your
 `wrangler.personal.jsonc` and `WRANGLER_PROFILE` apply — that is what the
@@ -174,6 +178,41 @@ it.
 **Rolling back.** Workers & Pages → your Worker → **Deployments → Roll back**
 reverts code only (or `npx wrangler rollback`), and migrations stay applied, so
 rolling back across a schema change can break things.
+
+## Backups
+
+Drafts, schedules, publish history, accounts and settings all live in D1; media
+lives in R2.
+
+D1 keeps its own history for 30 days. Time Travel reports what it holds and
+rewinds the database to an earlier point:
+
+```sh
+node scripts/wrangler.mjs d1 time-travel info DB
+node scripts/wrangler.mjs d1 time-travel restore DB --timestamp 2026-09-21T09:00:00Z
+```
+
+For a copy of your own, export the database to SQL. `DB` is the binding in your
+config, so the same command works on a database you renamed:
+
+```sh
+node scripts/wrangler.mjs d1 export DB --remote --skip-confirmation --output ~/cogsend-$(date +%F).sql
+node scripts/wrangler.mjs d1 execute DB --remote --yes --file ~/cogsend-2026-09-22.sql
+```
+
+`--no-schema` exports rows without the schema and `--table` narrows the export to
+one table. Restore into an empty database, or one Time Travel has just rewound: an
+export carries `CREATE TABLE` statements, and its rows collide with rows that are
+already there.
+
+R2 has no export command. Copy the bucket with any S3 client (`rclone`, `aws s3
+sync`) against its S3 endpoint, or fetch objects one at a time with:
+
+```sh
+node scripts/wrangler.mjs r2 object get cogsend-media/<key> --remote --file ./<key>
+```
+
+The bucket name is `bucket_name` in `wrangler.personal.jsonc`.
 
 ## Domains and URLs
 
@@ -331,7 +370,8 @@ d1 …` and `npm run doctor` all name the instance you think they do.
 
 Worker, D1 database and R2 bucket can be deleted from the dashboard; the
 `wrangler.personal.jsonc` and `.dev.vars` files hold the only local state. A
-fresh clone plus `npm run setup` then rebuilds everything.
+fresh clone plus `npm run setup` then rebuilds everything. Take a
+[backup](#backups) first if you might want the data.
 
 ## Still stuck?
 

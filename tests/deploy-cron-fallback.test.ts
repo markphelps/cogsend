@@ -11,6 +11,7 @@ import {
 	cronStateValue,
 	isCronQuotaError,
 	parseJsonc,
+	profileArgs,
 	withoutConfigArg,
 	withoutCronTriggers
 } from '../scripts/lib/wrangler-config.mjs';
@@ -145,6 +146,32 @@ describe('config argument handling', () => {
 	});
 });
 
+describe('profile argument handling', () => {
+	// This rule used to live inside the wrapper, reachable only by spawning it.
+	// CI never sets the variable and the suite now keeps the developer's own
+	// profile out (tests/setup-env.ts), so these cases are the coverage.
+	it('adds the flag only when the environment names a profile', () => {
+		expect(profileArgs(['deploy'], {})).toEqual([]);
+		expect(profileArgs(['deploy'], { WRANGLER_PROFILE: '   ' })).toEqual([]);
+		expect(profileArgs(['deploy'], { WRANGLER_PROFILE: 'my-account' })).toEqual([
+			'--profile',
+			'my-account'
+		]);
+		// Pasted with a stray newline: the name is trimmed, so it does not reach
+		// wrangler with one.
+		expect(profileArgs(['deploy'], { WRANGLER_PROFILE: ' my-account\n' })).toEqual([
+			'--profile',
+			'my-account'
+		]);
+	});
+
+	it("leaves an explicit profile in the caller's argv alone", () => {
+		const set = { WRANGLER_PROFILE: 'my-account' };
+		expect(profileArgs(['deploy', '--profile', 'other'], set)).toEqual([]);
+		expect(profileArgs(['deploy', '--profile=other'], set)).toEqual([]);
+	});
+});
+
 /**
  * The fallback as the operator experiences it: a stubbed `wrangler` that fails
  * with the real error on the first deploy and succeeds on the retry. Runs the
@@ -179,11 +206,16 @@ ${scriptBody}
 		return { root: created, bin };
 	}
 
-	function runWrapper(root: string, bin: string, args: string[] = ['deploy']) {
+	function runWrapper(
+		root: string,
+		bin: string,
+		args: string[] = ['deploy'],
+		extraEnv: Record<string, string> = {}
+	) {
 		return spawnSync('node', [join(process.cwd(), 'scripts/wrangler.mjs'), ...args], {
 			cwd: root,
 			encoding: 'utf8',
-			env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }
+			env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ...extraEnv }
 		});
 	}
 
@@ -248,6 +280,33 @@ process.exit(0);`,
 		expect(result.status).toBe(1);
 		// No state was recorded: the deploy never completed.
 		expect(calls(root)).toHaveLength(2);
+	});
+
+	it('passes the account profile on to wrangler, before the config it adds', () => {
+		// The other end of the rule unit-tested above: the wrapper has to put the
+		// flag on the command line, in front of everything it adds itself.
+		const { root, bin } = scratch(
+			`if (deploy) { console.log('Deployed sent'); process.exit(0); }
+process.exit(0);`,
+			`{\n\t"name": "cogsend"\n}\n`
+		);
+		const result = runWrapper(root, bin, ['deploy'], { WRANGLER_PROFILE: 'my-account' });
+		expect(result.status).toBe(0);
+		expect(calls(root)[0]).toEqual(['wrangler', 'deploy', '--profile', 'my-account']);
+
+		// With a personal config in the directory, that is appended as well — and
+		// after the profile, which is the order this wrapper composes.
+		writeFileSync(join(root, 'wrangler.personal.jsonc'), `{\n\t"name": "cogsend-mine"\n}\n`);
+		runWrapper(root, bin, ['deploy'], { WRANGLER_PROFILE: 'my-account' });
+		const deploys = calls(root).filter((args: string[]) => args.includes('deploy'));
+		expect(deploys[1]).toEqual([
+			'wrangler',
+			'deploy',
+			'--profile',
+			'my-account',
+			'--config',
+			'wrangler.personal.jsonc'
+		]);
 	});
 
 	it('does nothing special for unrelated failures', () => {

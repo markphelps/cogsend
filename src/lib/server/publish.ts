@@ -11,6 +11,7 @@ import { decodeImageDimensions } from './image-dimensions';
 import { parsePollConfig } from '$lib/domain/poll';
 import { signPublicMediaUrl } from './public-media';
 import { resolvePublishSegments } from '$lib/domain/thread-segments';
+import { targetRecordKey } from '$lib/domain/tid';
 import { decryptJson, encryptJson } from './crypto';
 import { chunkIds, first, newId, parseJson, type AppDb } from './db/client';
 import {
@@ -35,6 +36,7 @@ import {
 	type PlatformId
 } from './providers';
 import { providerFetch } from './providers/timed-fetch';
+import { countingFetch, type SubrequestBudget } from './budget';
 
 /** Scheduler stops auto-retrying a target after this many claims; manual retry stays available. */
 export const MAX_PUBLISH_ATTEMPTS = 5;
@@ -248,13 +250,90 @@ function httpsBaseUrl(raw: string | undefined): string | null {
 	}
 }
 
+/**
+ * Roughly how many subrequests publishing this content will take from here:
+ * the database writes around the publish, one storage read per attachment,
+ * and the platform's own calls (uploads, status polls, the post itself). An
+ * estimate, deliberately generous — it only decides whether a second or later
+ * target in one request starts now or on the next tick.
+ */
+export function publishCallEstimate(platform: string, content: NormalizedPost): number {
+	const segments = content.thread && content.thread.length > 0 ? content.thread : [content];
+	const media = segments.flatMap((s) => s.media ?? []);
+	const images = media.filter((m) => !isVideoMedia(m));
+	const videos = media.filter(isVideoMedia);
+	const hasLink = (s: NormalizedPost) => /https?:\/\//i.test(s.text || '');
+	// Claim, connection, attempt row, resume lookup, success, attempt summary
+	// and draft status, a checkpoint per segment, and one more for whichever of
+	// a credential write, a lease renewal or a connection-status fix happens.
+	const database = 8 + segments.length;
+	const storage = media.length;
+	let platformCalls = 1;
+	switch (platform) {
+		case 'x':
+			for (const m of images) {
+				const chunks = Math.max(1, Math.ceil((m.size ?? m.bytes?.length ?? 0) / 5_000_000));
+				// init + appends + finalize + up to two alt-text calls, and status
+				// polls for a GIF.
+				platformCalls += 4 + chunks + ((m.mime || '').toLowerCase() === 'image/gif' ? 5 : 0);
+			}
+			platformCalls += segments.length;
+			break;
+		case 'mastodon':
+			// Upload, plus a couple of polls while the instance processes it.
+			platformCalls += images.length * 3 + segments.length;
+			break;
+		case 'bluesky':
+			platformCalls += images.length + segments.length;
+			// A link card: page fetch (and a redirect), image fetch, blob upload.
+			platformCalls += segments.filter((s) => !(s.media ?? []).length && hasLink(s)).length * 4;
+			break;
+		case 'linkedin':
+			platformCalls += images.length * 2 + 1;
+			for (const v of videos) {
+				platformCalls += 2 + Math.max(1, Math.ceil((v.size ?? v.bytes?.length ?? 0) / 4_194_304));
+			}
+			if (!media.length && hasLink(content)) platformCalls += 5;
+			break;
+		case 'threads':
+			// Container, a couple of status polls and the publish per post; a
+			// carousel adds a container and polls per item; the permalink lookup
+			// and the identity check run once.
+			platformCalls += segments.length * 4 + images.length * 3 + 4;
+			break;
+		default:
+			platformCalls += segments.length * 3 + media.length * 3;
+	}
+	return database + storage + platformCalls;
+}
+
+/** Calls the caller still needs after a publish returns (reads for the
+ *  response, the draft status, the failure digest on a tick). */
+export const PUBLISH_RESERVE_CALLS = 6;
+
 export async function publishTarget(
 	db: AppDb,
 	env: AppEnv,
 	store: MediaStore,
 	targetId: string,
-	options: { fetchImpl?: FetchLike; now?: Date } = {}
-): Promise<{ status: string; remotePostId?: string; error?: string; skipped?: boolean }> {
+	options: {
+		fetchImpl?: FetchLike;
+		now?: Date;
+		/** Counts this request's subrequests; see $lib/server/budget. */
+		budget?: SubrequestBudget | null;
+		/** The first target of a request always runs, whatever the budget says:
+		 *  deferring it would only defer it again on every tick. */
+		mustTry?: boolean;
+	} = {}
+): Promise<{
+	status: string;
+	remotePostId?: string;
+	error?: string;
+	skipped?: boolean;
+	/** Not started: it might not finish inside this request's budget. The row
+	 *  is untouched and still due, so the next tick publishes it. */
+	deferred?: boolean;
+}> {
 	const now = options.now ?? new Date();
 	const target = await first(
 		db.select().from(publishTargets).where(eq(publishTargets.id, targetId))
@@ -275,11 +354,13 @@ export async function publishTarget(
 	// token with no refresh path): mark the connection expired and park the
 	// target WITHOUT burning an attempt. The WHERE excludes scheduled rows
 	// so future schedules are never touched here.
+	let knownPlatform: string | null = null;
 	try {
 		const preConn = await first(
 			db.select().from(connections).where(eq(connections.id, target.connectionId))
 		);
 		if (preConn) {
+			knownPlatform = preConn.platform;
 			const provider = getProvider(preConn.platform as PlatformId);
 			const reason = provider.refreshImpossibleReason?.(
 				await decryptJson<ConnectionCredentials>(
@@ -314,6 +395,23 @@ export async function publishTarget(
 	} catch {
 		// Any unexpected failure here (bad ciphertext, unknown platform)
 		// falls through to the normal claim flow, which handles it.
+	}
+
+	// Built before the claim when there is a budget to check it against, so a
+	// target that would not fit is left exactly as it was. Reused below.
+	let prebuilt: NormalizedPost | null = null;
+	if (options.budget && !options.mustTry && knownPlatform) {
+		try {
+			prebuilt = await buildNormalizedPost(db, target.draftId, knownPlatform);
+			const needed = publishCallEstimate(knownPlatform, prebuilt) + PUBLISH_RESERVE_CALLS;
+			if (options.budget.remaining < needed) {
+				return { status: target.status, skipped: true, deferred: true };
+			}
+		} catch {
+			// Nothing to estimate from (a missing draft): the normal path
+			// below reports that properly.
+			prebuilt = null;
+		}
 	}
 
 	const claimedGeneration = target.attemptCount + 1;
@@ -432,7 +530,7 @@ export async function publishTarget(
 		const meta = parseJson<{ maxCharacters?: number; handle?: string }>(conn.metaJson, {});
 		const provider = getProvider(conn.platform as PlatformId);
 		const content = await hydrateMedia(
-			await buildNormalizedPost(db, target.draftId, conn.platform),
+			prebuilt ?? (await buildNormalizedPost(db, target.draftId, conn.platform)),
 			store
 		);
 		// A row uploaded before the feature was switched off (or on another
@@ -447,17 +545,29 @@ export async function publishTarget(
 		});
 		if (issues.length) throw new Error(issues.map((i) => i.message).join('; '));
 
-		const fetchImpl = options.fetchImpl ?? providerFetch;
+		const baseFetch = options.fetchImpl ?? providerFetch;
+		const fetchImpl = options.budget ? countingFetch(baseFetch, options.budget) : baseFetch;
 		let workingCreds = creds;
 		if (provider.refreshIfNeeded) {
-			workingCreds = await provider.refreshIfNeeded(creds, fetchImpl);
-			await db
-				.update(connections)
-				.set({
-					credentialsEncrypted: await encryptJson(workingCreds, env.APP_ENCRYPTION_KEY),
-					updatedAt: new Date()
-				})
-				.where(eq(connections.id, conn.id));
+			workingCreds = await refreshWithStoredRetry(
+				db,
+				env,
+				conn.id,
+				conn.credentialsEncrypted,
+				creds,
+				(c) => provider.refreshIfNeeded!(c, fetchImpl)
+			);
+			// Most publishes refresh nothing; writing the same credentials back
+			// would spend a call of the request's budget for no change.
+			if (JSON.stringify(workingCreds) !== JSON.stringify(creds)) {
+				await db
+					.update(connections)
+					.set({
+						credentialsEncrypted: await encryptJson(workingCreds, env.APP_ENCRYPTION_KEY),
+						updatedAt: new Date()
+					})
+					.where(eq(connections.id, conn.id));
+			}
 		}
 
 		// Identity healing: reconcile stored credentials with the live one
@@ -508,7 +618,9 @@ export async function publishTarget(
 					// Deliberately not attempt-scoped: the whole point is that a
 					// retry of the same target and segment carries the same key, so
 					// a provider that saw the first request recognises the second.
-					idempotencyKey: (segmentIndex: number) => `${targetId}:${segmentIndex}`
+					idempotencyKey: (segmentIndex: number) => `${targetId}:${segmentIndex}`,
+					recordKey: (segmentIndex: number) =>
+						targetRecordKey(targetId, target.createdAt.getTime(), segmentIndex)
 				}
 			);
 		} finally {
@@ -592,6 +704,41 @@ export async function publishTarget(
 			}
 		);
 		return { status: nextStatus, error: message };
+	}
+}
+
+/**
+ * Refresh a credential, tolerating a refresh another publish just did.
+ *
+ * Some platforms rotate the refresh token on every use, so when two publishes
+ * of one account refresh at the same moment, the slower one presents a token
+ * that has just been replaced and is refused. The winner has already stored the
+ * new credentials by then; reading them back and trying once more turns that
+ * race into a success instead of an "expired" account. A refusal with nothing
+ * newer stored is a real one and propagates.
+ */
+async function refreshWithStoredRetry(
+	db: AppDb,
+	env: AppEnv,
+	connectionId: string,
+	readCiphertext: string,
+	creds: ConnectionCredentials,
+	refresh: (creds: ConnectionCredentials) => Promise<ConnectionCredentials>
+): Promise<ConnectionCredentials> {
+	try {
+		return await refresh(creds);
+	} catch (err) {
+		if (classifyProviderError(err).code !== 'auth') throw err;
+		const latest = await first(
+			db
+				.select({ credentialsEncrypted: connections.credentialsEncrypted })
+				.from(connections)
+				.where(eq(connections.id, connectionId))
+		);
+		if (!latest?.credentialsEncrypted || latest.credentialsEncrypted === readCiphertext) throw err;
+		return refresh(
+			await decryptJson<ConnectionCredentials>(latest.credentialsEncrypted, env.APP_ENCRYPTION_KEY)
+		);
 	}
 }
 

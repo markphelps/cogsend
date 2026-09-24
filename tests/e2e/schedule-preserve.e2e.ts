@@ -145,14 +145,8 @@ for (const kind of ['missing', 'past', 'malformed'] as const) {
 		const stored = kind === 'missing' ? null : kind === 'past' ? PAST_ISO : STORED_ISO;
 		const { draftId } = await seedScheduledDraft(page, body, stored);
 		if (kind === 'malformed') {
-			// D1 stores an integer, so a bad value can only come from the wire.
-			await page.route(`**/api/drafts/${draftId}`, async (route) => {
-				if (route.request().method() !== 'GET') return route.continue();
-				const res = await route.fetch();
-				const json = await res.json();
-				for (const t of json.draft.targets) t.scheduledFor = 'not-a-date';
-				await route.fulfill({ response: res, json });
-			});
+			// SQLite's integer affinity still permits malformed legacy text.
+			d1(`UPDATE publish_targets SET scheduled_for='not-a-date' WHERE draft_id='${draftId}'`);
 		}
 
 		await page.goto(`/compose?id=${draftId}`);
@@ -171,18 +165,35 @@ test('(4) a new composer keeps the one-hour default', async ({ page }) => {
 
 test('(5) a schedule picked while the draft loads is not overwritten', async ({ page }) => {
 	const body = `schedule race ${randomUUID().slice(0, 8)}`;
-	const { draftId } = await seedScheduledDraft(page, body, STORED_ISO);
+	const { draftId, connId } = await seedScheduledDraft(page, body, STORED_ISO);
 	const sent = await captureSchedule(page, draftId);
+	// Make this draft unavailable to compose's SSR loader so the editor must
+	// use its client fallback, the path whose in-flight response is under test.
+	d1(
+		`DELETE FROM publish_targets WHERE draft_id='${draftId}'; DELETE FROM drafts WHERE id='${draftId}'`
+	);
 
-	// Hold the draft read until the user has picked a time.
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => (release = resolve));
 	await page.route(`**/api/drafts/${draftId}`, async (route) => {
-		if (route.request().method() === 'GET') await gate;
-		await route.continue();
+		if (route.request().method() !== 'GET') return route.continue();
+		await gate;
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify({
+				draft: {
+					id: draftId,
+					baseBody: body,
+					selectedConnectionIds: null,
+					variants: [],
+					media: [],
+					targets: [{ connectionId: connId, scheduledFor: STORED_ISO }]
+				}
+			})
+		});
 	});
 
-	await page.goto('/posts');
 	await page.goto(`/compose?id=${draftId}`);
 	await openSchedulePanel(page);
 	await page.getByText('Specific Date').click();

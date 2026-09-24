@@ -1,7 +1,13 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
-import { ensureSchema, ensureSchemaOnce, INIT_SQL } from '$lib/server/db/init-sql';
+import {
+	ensureSchema,
+	ensureSchemaOnce,
+	INIT_SQL,
+	SCHEMA_FINGERPRINT,
+	SCHEMA_MARKER_KEY
+} from '$lib/server/db/init-sql';
 
 /**
  * The bootstrap DDL is what a cold Worker runs before anything else, and until
@@ -42,6 +48,30 @@ async function freshDb() {
 	return { client, binding: d1Shim(client) };
 }
 
+/** What a database bootstrapped by an older release looks like: no marker. */
+async function forgetBootstrap(client: Client) {
+	await client.execute({
+		sql: 'DELETE FROM app_settings WHERE key = ?',
+		args: [SCHEMA_MARKER_KEY]
+	});
+}
+
+function countingPrepare(binding: D1Database) {
+	const seen: string[] = [];
+	const proxy = new Proxy(binding as unknown as Record<string, unknown>, {
+		get(target, prop, receiver) {
+			if (prop === 'prepare') {
+				return (sql: string) => {
+					seen.push(sql);
+					return (target.prepare as (s: string) => unknown).call(target, sql);
+				};
+			}
+			return Reflect.get(target, prop, receiver);
+		}
+	}) as unknown as D1Database;
+	return { proxy, seen };
+}
+
 async function tableNames(client: Client): Promise<string[]> {
 	const res = await client.execute("SELECT name FROM sqlite_master WHERE type='table'");
 	return res.rows.map((r) => String((r as unknown as { name: string }).name));
@@ -76,8 +106,11 @@ describe('ensureSchema', () => {
 	it('is idempotent, including the migration path', async () => {
 		const { client, binding } = await freshDb();
 		await ensureSchema(binding);
-		// Second call takes the "users already exists" branch: column adds,
-		// the rewritten DDL, index creation and the unique-index dance.
+		// Without the marker, the second call takes the "users already exists"
+		// branch: column adds, the rewritten DDL, index creation and the
+		// unique-index dance.
+		await forgetBootstrap(client);
+		await expect(ensureSchema(binding)).resolves.toBeUndefined();
 		await expect(ensureSchema(binding)).resolves.toBeUndefined();
 		const names = await tableNames(client);
 		expect(names.filter((n) => n === 'publish_targets')).toHaveLength(1);
@@ -173,10 +206,54 @@ describe('ensureSchema', () => {
 		const older = await freshDb();
 		await ensureSchema(older.binding);
 		await older.client.execute('DROP INDEX IF EXISTS mfa_challenges_expires_idx');
+		await forgetBootstrap(older.client);
 		await ensureSchema(older.binding);
 		const healed = await indexNames(older.client);
 		expect([...fromMigrations].filter((name) => !healed.has(name))).toEqual([]);
 		older.client.close();
+	});
+
+	it('checks an up-to-date database with a single query', async () => {
+		const { client, binding } = await freshDb();
+		await ensureSchema(binding);
+		const marker = await client.execute({
+			sql: 'SELECT value FROM app_settings WHERE key = ?',
+			args: [SCHEMA_MARKER_KEY]
+		});
+		expect(marker.rows[0]?.value).toBe(SCHEMA_FINGERPRINT);
+
+		// A new isolate on a current database: one read, no DDL.
+		const warm = countingPrepare(binding);
+		await ensureSchema(warm.proxy);
+		expect(warm.seen).toHaveLength(1);
+		expect(warm.seen[0]).toMatch(/FROM app_settings/);
+
+		// A database an older release bootstrapped takes the full path once,
+		// then records the marker so the next isolate does not.
+		await forgetBootstrap(client);
+		const cold = countingPrepare(binding);
+		await ensureSchema(cold.proxy);
+		expect(cold.seen.length).toBeGreaterThan(10);
+		const again = countingPrepare(binding);
+		await ensureSchema(again.proxy);
+		expect(again.seen).toHaveLength(1);
+		client.close();
+	});
+
+	it('runs the full check again when the recorded bootstrap is a different one', async () => {
+		const { client, binding } = await freshDb();
+		await ensureSchema(binding);
+		await client.execute({
+			sql: 'UPDATE app_settings SET value = ? WHERE key = ?',
+			args: ['an-older-release', SCHEMA_MARKER_KEY]
+		});
+		await client.execute('DROP INDEX IF EXISTS sessions_expires_idx');
+		await ensureSchema(binding);
+		const idx = await client.execute(
+			"SELECT name FROM sqlite_master WHERE type='index' AND name='sessions_expires_idx'"
+		);
+		expect(idx.rows).toHaveLength(1);
+		client.close();
 	});
 
 	it('keeps the bootstrap DDL statement-splittable', async () => {

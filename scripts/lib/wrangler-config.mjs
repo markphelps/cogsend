@@ -172,6 +172,25 @@ export function withoutConfigArg(args) {
 	return out;
 }
 
+/**
+ * `--profile <name>` for the account a command runs against.
+ *
+ * `WRANGLER_PROFILE` is how a multi-account user picks one (see
+ * docs/configuration.md), and the flag has to survive the commands the wrapper
+ * rebuilds — but an explicit `--profile` in the caller's own argv is theirs, not
+ * something to double up on.
+ *
+ * @param {string[]} args the command line as the caller wrote it
+ * @param {Record<string, string | undefined>} env
+ * @returns {string[]} the flag to append, or none when there is nothing to add
+ */
+export function profileArgs(args, env) {
+	const name = env?.WRANGLER_PROFILE?.trim();
+	if (!name) return [];
+	if (args.some((arg) => arg === '--profile' || arg.startsWith('--profile='))) return [];
+	return ['--profile', name];
+}
+
 /** The temp config is written next to the config it derives from, because
  *  Wrangler resolves relative paths (`main`, `assets.directory`, migrations)
  *  against the config file's directory. */

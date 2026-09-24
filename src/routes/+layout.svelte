@@ -28,6 +28,21 @@
 	const displayName: string | null = $derived(data.displayName ?? null);
 	const profilePictureUrl: string | null = $derived(data.profilePictureUrl ?? null);
 	const avatarSeed = $derived(displayName?.trim() || userEmail?.split('@')[0] || 'cogsend');
+	const avatarSrc = $derived(
+		profilePictureUrl ||
+			`https://api.dicebear.com/7.x/notionists/svg?seed=${encodeURIComponent(avatarSeed)}`
+	);
+	// Initials stay underneath the picture. A failed URL (and only that URL)
+	// drops the image; the next URL is tried again. Dicebear SVGs have no
+	// intrinsic size, so readiness cannot be decided from naturalWidth.
+	let failedAvatarSrc = $state<string | null>(null);
+
+	function headerInitials(name: string | null, email: string | null): string {
+		const source = (name?.trim() || email?.split('@')[0] || '?').replace(/^@/, '');
+		const parts = source.split(/[\s._-]+/).filter(Boolean);
+		if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+		return source.slice(0, 2).toUpperCase();
+	}
 	const isLoginRoute = $derived(page.url.pathname.startsWith('/login'));
 	let logoutError = $state<string | null>(null);
 	async function logout() {
@@ -217,7 +232,7 @@
 				<div class="profile-dropdown-container relative">
 					<button
 						type="button"
-						class="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full border border-stone-200/80 bg-white shadow-[0_4px_20px_-8px_rgb(28_25_23/0.08)] transition-all hover:border-stone-300 hover:shadow-[0_4px_24px_-8px_rgb(28_25_23/0.12)] focus:outline-none"
+						class="relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-full border border-stone-200/80 bg-white shadow-[0_4px_20px_-8px_rgb(28_25_23/0.08)] transition-all hover:border-stone-300 hover:shadow-[0_4px_24px_-8px_rgb(28_25_23/0.12)] focus:outline-none"
 						onclick={() => (showProfileDropdown = !showProfileDropdown)}
 						aria-haspopup="menu"
 						aria-expanded={showProfileDropdown}
@@ -226,14 +241,22 @@
 						aria-label="Profile menu"
 						title={userEmail}
 					>
-						<img
-							src={profilePictureUrl ||
-								`https://api.dicebear.com/7.x/notionists/svg?seed=${encodeURIComponent(avatarSeed)}`}
-							alt=""
+						<span
+							class="flex h-full w-full items-center justify-center bg-stone-200 text-[11px] font-bold text-stone-700"
 							aria-hidden="true"
-							referrerpolicy="no-referrer"
-							class="h-full w-full object-cover"
-						/>
+						>
+							{headerInitials(displayName, userEmail)}
+						</span>
+						{#if failedAvatarSrc !== avatarSrc}
+							<img
+								src={avatarSrc}
+								alt=""
+								aria-hidden="true"
+								referrerpolicy="no-referrer"
+								class="absolute inset-0 h-full w-full object-cover"
+								onerror={() => (failedAvatarSrc = avatarSrc)}
+							/>
+						{/if}
 					</button>
 
 					<!-- PROFILE DROPDOWN -->

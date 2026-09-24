@@ -1,0 +1,52 @@
+# CogSend
+
+> Self-hosted social scheduler for Mastodon, Bluesky, LinkedIn, Threads and X. SvelteKit 2 and Svelte 5 on Cloudflare Workers, D1 via Drizzle, R2 for media.
+
+CogSend is single-tenant: one admin account on the operator's own Cloudflare account, with their own provider credentials. Every instance is somebody's personal deployment, so nothing may assume the maintainer's account, domain or data.
+
+## Commands
+
+```bash
+npm install
+npm run dev
+npm run check
+npm run lint
+npm test
+npm run test:e2e
+npm run build
+```
+
+`check`, `lint`, `test` and `build` must all pass before a change is done. `npm audit --audit-level=high` runs in CI and can fail on a newly published advisory that passes locally.
+
+Local setup, the seeded account and `SKIP_TOTP` live in [docs/development.md](docs/development.md). That file is the single source of truth for running the app, so do not duplicate its content.
+
+## Conventions
+
+- Comment the why, never the what. A comment earns its place only by explaining what the code cannot show: a protocol quirk, a retry rule, a failure mode. Never add a restatement of the line below, a section banner (`// --- Helpers ---`), historical narration or commented-out code. A stale comment is worse than none: when you change code a comment describes, fix or delete it in the same change.
+- `src/lib/domain/` is pure logic shared by client and server; `src/lib/server/` and every `+server.ts` are Worker-only, with no DOM. Take what you need from `event.locals`.
+- No new runtime dependencies without a reason.
+- Tests assert what the app does, not that a spy was called.
+- Operator scripts print one line per step through `scripts/lib/cli.mjs`, with detail only on `--verbose` or a failure.
+- Nothing personal in code or docs: no hardcoded Worker name, D1 `database_id`, R2 bucket or `APP_URL`. Instances override those in the gitignored `wrangler.personal.jsonc`.
+- The old names are gone: `socialsent`, `SocialSent`, `social-sent` and `panda-social` must not appear anywhere, and Typefully is never to be referenced.
+
+## Testing
+
+`tests/schema-bootstrap.test.ts` and `tests/migration-sync.test.ts` fail when `drizzle/*.sql` and the bootstrap DDL in `src/lib/server/db/init-sql.ts` disagree, so a migration that creates a table or index must be reflected in `INIT_SQL` in the same change.
+
+The e2e suite is one serial journey, not independent tests, so a single spec run with `-g` proves nothing about that spec.
+
+## Commits and pull requests
+
+- Before finishing a change, check whether `README.md`, `docs/` or `AGENTS.md` has gone stale because of it, and ask whether to update them. Do not update the docs silently, and do not skip the check.
+- One-line conventional commits: `fix(media): …`, `feat(accounts): …`. Add a body only when the change genuinely needs one.
+- Do not hard-wrap prose. Release notes, PR descriptions and long messages wrap in the reader's view, so inserting line breaks by hand is a defect.
+- Do not commit or push unless asked.
+
+## Do not
+
+- Add a `CLAUDE.md`, `CLAUDE.local.md` or `AGENTS.override.md`. Agents read `AGENTS.md` on their own, and each of those takes precedence over it: Claude Code ignores `AGENTS.md` when a `CLAUDE.md` or `CLAUDE.local.md` exists, and pi reads `AGENTS.override.md` first.
+- Hand-edit a shipped migration or a deployed schema. Add a migration.
+- Put secrets in tracked files. Worker secrets go through `npm run secrets:put`.
+- Deploy, publish a release, push a tag, run a remote migration or change credentials unless asked. These act on a real Cloudflare account.
+- Write comments inside copyable command blocks in the docs. The copy button copies them too.

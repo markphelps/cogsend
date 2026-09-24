@@ -31,11 +31,32 @@ cannot reach anything except the tick (see [Scheduling](scheduling.md)).
 | `RESEND_API_KEY`, `NOTIFY_EMAIL`, `NOTIFY_FROM` | failure digests by email                                      |
 | `MEDIA_PUBLIC_BASE_URL`                         | serving Meta's crawler from a public media origin (see below) |
 | `ENABLE_VIDEO_UPLOAD`                           | LinkedIn video, wired but unverified                          |
+| `SUBREQUEST_LIMIT`                              | publishing more per tick on a paid Workers plan (see below)   |
 
 `MEDIA_PUBLIC_BASE_URL` is a trade-off: it serves media from a public origin
 with no signature and no expiry, protected only by the randomness in the object
 key. Keep the origin unlisted and treat a leaked URL as permanent; leave the
 variable unset to keep the short-lived signed route.
+
+`SUBREQUEST_LIMIT` is the number of calls one request may make: D1 statements,
+R2 operations and requests to the platforms all count. Cloudflare allows 50 on
+Workers Free and 10,000 on Paid, and the app cannot tell which plan it runs on,
+so it assumes Free. Leave it unset on Free. On Paid, set it to `10000` so a tick
+or a multi-account publish sends everything at once instead of a post or two per
+request. Setting it higher than your plan allows brings back the risk it exists
+to prevent: a request that runs out after a platform accepted a post, and a
+second copy of that post later.
+
+Upload them with `npm run secrets:put` (or `npm run secrets:put NAME` for one),
+which reads `.dev.vars` and then reads the Worker's own secret list back to
+confirm what landed — it exits non-zero and names anything still missing. A name
+it skips is a name it could not find locally, and the message says which line it
+looked at. Worker secrets take effect immediately: there is no redeploy step
+after `secrets:put`, so a connect button that stays disabled is missing a
+credential, not a deploy.
+Without a checkout on the machine you are working from, the dashboard does the
+same job: Workers & Pages → your Worker → Settings → Variables and Secrets →
+Add → **Secret**, then **Deploy** to apply it.
 
 The login is not one of these secrets. `npm run setup` writes the account into D1
 — see [The login](#the-login) below.
@@ -58,6 +79,23 @@ signed media URLs must use. A pinned value does not follow a hostname change, so
 update it if you move — [Domains and URLs](deploy.md#domains-and-urls) has the
 steps, and the redirect URIs that go with them.
 
+## Faster post thumbnails
+
+The Posts grid asks for small copies of its image attachments. A deployment with
+the Cloudflare Images binding downscales each still image once to a 160px JPEG,
+caches it in the media bucket, and serves it instead of the full-size original:
+
+```jsonc
+// wrangler.jsonc, or wrangler.personal.jsonc for a personal deployment
+"images": { "binding": "IMAGES" }
+```
+
+The binding name must stay `IMAGES`. Transformations of images stored in R2 are
+part of the Images Free plan (5,000 unique transformations a month, then $0.50
+per 1,000); because the result is cached, each image is transformed once, not
+once per view. Without the binding, and for GIFs, videos, or an encode that
+fails, the original is served — this is a speed-up, not a requirement.
+
 ## Keeping your own deployment separate from upstream
 
 If you run your own instance while pulling updates from this repo, keep your
@@ -72,6 +110,9 @@ wrangler.personal.jsonc` automatically when that file exists, plus `--profile
 ```sh
 WRANGLER_PROFILE=my-account npm run deploy
 ```
+
+`account_id` in that same file pins the account too, and unlike an environment
+variable it cannot be inherited by a script that spawns a process of its own.
 
 Because your changes live in files upstream never touches, `git pull upstream
 main` stays conflict-free. `npm run doctor` warns when the two configs disagree.
