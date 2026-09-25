@@ -64,7 +64,7 @@ on under **Settings → Preferences → Ask for confirmation before publishing**
 
 The calendar button next to it schedules instead: either **Publish in** an offset
 of minutes, hours or days (one hour by default), or a **Specific Date** and time in
-your own timezone. A scheduled post waits in **Posts → Scheduled** until a
+your own timezone. Opening a scheduled post again with **Edit Post** starts on the time it is already set for, so confirming without a change keeps it. A scheduled post waits in **Posts → Scheduled** until a
 [tick](scheduling.md) publishes it.
 
 If some accounts fail, the composer says **Couldn't publish everywhere** and lists

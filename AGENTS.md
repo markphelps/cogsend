@@ -49,7 +49,7 @@ The e2e suite is one serial journey, not independent tests, so a single spec run
 - Before finishing a change, check whether `README.md`, `docs/` or `AGENTS.md` has gone stale because of it, and ask whether to update them. Do not update the docs silently, and do not skip the check.
 - One-line conventional commits: `fix(media): …`, `feat(accounts): …`. Add a body only when the change genuinely needs one.
 - Do not hard-wrap prose. Release notes, PR descriptions and long messages wrap in the reader's view, so inserting line breaks by hand is a defect.
-- Do not commit or push unless asked.
+- Do not commit or push unless asked. When asked, commit to the current branch; do not create a new one unless asked.
 
 ## Do not
 

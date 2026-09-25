@@ -26,8 +26,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 		const user = requireUser(locals.user);
 		requireScope(locals, 'write');
 		const body = await request.json().catch(() => null);
-		if (!body || typeof body !== 'object') return fail('Invalid JSON body', 400);
-		return ok(await updateDraft(locals, user.id, params.id, body as Record<string, unknown>));
+		return ok(await updateDraft(locals, user.id, params.id, body));
 	} catch (err) {
 		return handleError(err);
 	}

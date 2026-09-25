@@ -6,31 +6,33 @@ deserve credit for different reasons:
 
 - **Bundled into the Worker.** This code is compiled into the artifact you
   deploy, so their notices must travel with it.
-- **Not bundled into the Worker.** Installed from npm, but absent from the
-  current Worker artifact. This includes build/test tooling and the MCP client
-  SDK. The MCP server and core packages are bundled into the Worker.
+- **Build and test tooling.** Installed from npm to build and test the
+  project. It is not distributed with the Worker.
 
 Bundled into the Worker
 -----------------------
 
 Apache-2.0             1 package
-MIT                   11 packages
+ISC                    1 package
+MIT                    12 packages
 
+- @lucide/svelte 1.45.0 — ISC — https://github.com/lucide-icons/lucide
 - @modelcontextprotocol/core 2.0.0 — MIT — https://github.com/modelcontextprotocol/typescript-sdk
 - @modelcontextprotocol/server 2.0.0 — MIT — https://github.com/modelcontextprotocol/typescript-sdk
 - @sveltejs/kit 2.70.3 — MIT — https://github.com/sveltejs/kit
 - clsx 2.1.1 — MIT — https://github.com/lukeed/clsx
-- cookie 0.7.2 — MIT — https://github.com/jshttp/cookie
+- cookie 0.6.0 — MIT — https://github.com/jshttp/cookie
 - date-fns 4.4.0 — MIT — https://github.com/date-fns/date-fns
 - devalue 5.9.4 — MIT — https://github.com/sveltejs/devalue
 - drizzle-orm 0.45.2 — Apache-2.0 — https://github.com/drizzle-team/drizzle-orm
 - esm-env 1.2.2 — MIT — https://github.com/benmccann/esm-env
 - set-cookie-parser 3.1.2 — MIT — https://github.com/nfriedly/set-cookie-parser
+- svelte 5.57.0 — MIT — https://github.com/sveltejs/svelte
 - uqr 0.1.3 — MIT — https://github.com/unjs/uqr
 - zod 4.6.2 — MIT — https://github.com/colinhacks/zod
 
-Not bundled into the Worker
----------------------------
+Build and test tooling (not distributed)
+-----------------------------------------
 
 Apache-2.0             2 packages
 MIT                    19 packages

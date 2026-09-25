@@ -1,33 +1,33 @@
 # API
 
-The browser UI uses the `cog_session` cookie after TOTP. Scripts, Shortcuts,
-cron jobs, and MCP clients use a personal API key instead. Create and manage the
-key in **Settings → API access**. Choose **Read-only** or **Read + write** when
-generating or replacing a key; **Read + write** is the default, and write access
-also grants read access.
+The browser UI uses the `cog_session` cookie after TOTP. Scripts, Shortcuts, cron
+and MCP clients use a personal API key instead — no login, no cookies. Manage it in
+**Settings → API access** (generate, rotate, revoke); the raw key is shown once
+and only its hash is stored. Worked examples for the common calls live in-app at
+`/api`.
 
-CogSend keeps one active personal API key. The raw key is displayed once; only
-its hash is stored. Generating a replacement immediately revokes the previous
-key. Revoke or replace keys in Settings; MCP tools cannot manage keys.
+## Authentication
 
-## REST API authentication
-
-Export your instance URL and load the personal key into your shell from a
-secret manager or another private source:
+Export your instance URL and a key from **Settings → API access**:
 
 ```sh
 export APP_URL=https://cogsend.<account>.workers.dev
-: "${COGSEND_API_KEY:?Load it from a secret manager}"
+export COGSEND_API_KEY=cog_...
 
-curl -s "$APP_URL/api/connections" \
-  -H "Authorization: Bearer $COGSEND_API_KEY"
+curl -s "$APP_URL/api/connections" -H "Authorization: Bearer $COGSEND_API_KEY"
 ```
 
-Protected REST API routes accept the standard `Authorization: Bearer` header
-or `X-API-Key`. The legacy `API_TOKEN` Worker secret remains supported by those
-routes for backwards compatibility. Never put credentials in a URL query
-string. These REST authentication alternatives do **not** apply to `/api/mcp`;
-see below.
+`X-API-Key` works as an alternative header; never put the key in the URL. The key
+acts as you on drafts, variants, media, publish, schedule, queue, settings, and
+reads — but it can never connect, re-verify or disconnect accounts, or create,
+rotate, or revoke keys (those stay in the browser session). The global
+`API_TOKEN` Worker secret still works as a bearer for backwards compatibility, on
+exactly the same routes as a personal key — it cannot reach the session-only ones
+either — but prefer the personal key for scripts: it is revocable without
+touching the scheduler.
+
+None of these alternatives apply to `/api/mcp`, which accepts only a personal
+key as a bearer: see [MCP server](#mcp-server).
 
 ## MCP server
 
@@ -170,16 +170,14 @@ curl -s -X POST "$APP_URL/api/drafts/DRAFT_ID/publish" \
 
 ## Limits
 
-- A body is capped at 100,000 characters, and a variant may carry at most 100
-  explicit `threadSegments`.
-- Each platform's own text and media limits are checked again at publish, so
-  what the API accepts is not necessarily what a platform will take.
+- A body is capped at 100,000 characters, and a variant may carry at most 100 explicit `threadSegments`.
+- Each platform's own text and media limits are checked again at publish, so what the API accepts is not necessarily what a platform will take.
 
 ## Publishing behaviour
 
 - Publishing the same draft and account twice reuses the row. Already-published accounts come back `skipped: true`.
 - A publish that is still running on that account answers **409** with `inFlight` (the connection ids) — wait, then try again.
 - A retried segment carries the same platform-side id as its first attempt, so a thread that failed half-way does not double-post what already went out (Mastodon remembers the id for an hour, Bluesky refuses to overwrite the record).
-- Sending several connection ids in one request publishes them in order. The first always runs; each further one runs only if it fits in what is left of the request's Cloudflare call budget (50 on Workers Free, see `SUBREQUEST_LIMIT` in [Configuration](configuration.md#secrets)). The ones that don't fit come back with `status: "pending"` and `deferred: true`. They are already due and go out on the next scheduler tick, so don't send those ids again. For the fastest results, send one connection id per request. If the request nevertheless runs out of its per-invocation budget (Workers Free allows 50 database statements), it answers `200` with `stopped: true`, `stoppedError`, and the results it did get. Accounts after the last completed entry were not completed and are still due, so send those ids again. A target interrupted by the failure is left retryable, never `publishing`; a `500` means nothing was recorded, so check the draft before retrying.
-- Do not call `/api/targets/:id/retry` unless the row is `failed` (or a stuck `publishing` row older than 15 minutes).
+- Sending several connection ids in one request publishes them in order. The first always runs; each further one runs only if it fits in what is left of the request's Cloudflare call budget (50 on Workers Free, see `SUBREQUEST_LIMIT` in [Configuration](configuration.md#secrets)). The ones that don't fit come back with `status: "pending"` and `deferred: true`. They are already due and go out on the next scheduler tick, so don't send them again. For the fastest results, send one connection id per request. If a request still runs out, it answers `200` with `stopped: true`, `stoppedError`, and the results it did get — the accounts after the last entry were not completed and are still due (a target the failure interrupted is left retryable, never `publishing`), so send those ids again. A `500` means nothing was recorded; check the draft before retrying.
+- Do not call `/api/targets/:id/retry` unless the row is `failed` (or a stuck `publishing` older than 15 minutes).
 - Schedule returns **409** if that account is already published or still publishing. Check `error`, `alreadyPublished`, and `inFlight` instead of treating HTTP 200 as "it was scheduled".

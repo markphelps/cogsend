@@ -104,7 +104,11 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-function requestEvent(request: Request, overrides: Record<string, unknown> = {}) {
+function requestEvent(
+	request: Request,
+	overrides: Record<string, unknown> = {},
+	platform?: { ctx: { waitUntil: (promise: Promise<unknown>) => void } }
+) {
 	const locals = {
 		user,
 		apiKeyScopes: ['read', 'write'],
@@ -113,7 +117,7 @@ function requestEvent(request: Request, overrides: Record<string, unknown> = {})
 		media: createTestMedia(),
 		...overrides
 	};
-	return { request, locals, url: new URL(request.url) } as never;
+	return { request, locals, platform, url: new URL(request.url) } as never;
 }
 
 async function seedDraft(ownerId = user.id) {
@@ -153,7 +157,13 @@ async function postMcp(
 	method: string,
 	params: Record<string, unknown> = {},
 	overrides: Record<string, unknown> = {},
-	{ includeProtocolVersion = true }: { includeProtocolVersion?: boolean } = {}
+	{
+		includeProtocolVersion = true,
+		platform
+	}: {
+		includeProtocolVersion?: boolean;
+		platform?: { ctx: { waitUntil: (promise: Promise<unknown>) => void } };
+	} = {}
 ) {
 	const headers = new Headers({
 		'content-type': 'application/json',
@@ -178,7 +188,7 @@ async function postMcp(
 		headers,
 		body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: wireParams })
 	});
-	const response = await POST(requestEvent(request, overrides));
+	const response = await POST(requestEvent(request, overrides, platform));
 	return { response, payload: (await response.json()) as McpPayload };
 }
 
@@ -430,6 +440,35 @@ describe('MCP route', () => {
 		);
 		expect(result.structuredContent!.status).toBe(500);
 		expect(log).toHaveBeenCalledOnce();
+	});
+
+	it('keeps a retried publish alive with waitUntil, like the REST route', async () => {
+		const draftId = await seedDraft();
+		const connectionId = await seedConnection();
+		const targetId = newId();
+		const now = new Date();
+		await db.insert(publishTargets).values({
+			id: targetId,
+			draftId,
+			connectionId,
+			status: 'failed',
+			attemptCount: 5,
+			createdAt: now,
+			updatedAt: now
+		});
+		vi.spyOn(publish, 'publishTarget').mockResolvedValueOnce({
+			status: 'published'
+		} as never);
+		const background: Promise<unknown>[] = [];
+		const { payload } = await postMcp(
+			'tools/call',
+			{ name: 'retry_delivery', arguments: { targetId } },
+			{},
+			{ platform: { ctx: { waitUntil: (promise) => background.push(promise) } } }
+		);
+		expect(payload.result!.isError).toBeFalsy();
+		expect(background).toHaveLength(1);
+		await expect(background[0]).resolves.toBeUndefined();
 	});
 
 	it('returns 405 for GET and DELETE without issuing session IDs', async () => {

@@ -172,7 +172,7 @@ export async function updateDraft(
 	ctx: OperationContext,
 	userId: string,
 	id: string,
-	input: Record<string, unknown>
+	body: unknown
 ) {
 	const old = await first(
 		ctx.db
@@ -183,6 +183,8 @@ export async function updateDraft(
 	if (!old) invalid('Not found', 404);
 	const ts = await ctx.db.select().from(publishTargets).where(eq(publishTargets.draftId, id));
 	if (draftHasInFlightPublish(ts)) invalid('Publishing in progress — try again shortly', 409);
+	if (!body || typeof body !== 'object') invalid('Invalid JSON body');
+	const input = body as Record<string, unknown>;
 	const s = normalizeSelectedConnectionIds(input.selectedConnectionIds);
 	if (!s.ok) invalid(s.error);
 	const patch: { title?: string | null; baseBody?: string; selectedConnectionIds?: string } = {};
@@ -223,7 +225,7 @@ export async function scheduleDraft(
 	ctx: OperationContext,
 	userId: string,
 	draftId: string,
-	input: { connectionIds?: unknown; runAt?: unknown }
+	body: unknown
 ) {
 	const draft = await first(
 		ctx.db
@@ -232,6 +234,8 @@ export async function scheduleDraft(
 			.where(and(eq(drafts.id, draftId), eq(drafts.userId, userId)))
 	);
 	if (!draft) invalid('Not found', 404);
+	if (!body || typeof body !== 'object') invalid('Invalid JSON body');
+	const input = body as { connectionIds?: unknown; runAt?: unknown };
 	const now = new Date();
 	if (connectionIdsOverflow(input.connectionIds)) invalid('Too many connections (max 10)');
 	const ids = normalizeConnectionIds(input.connectionIds);
@@ -360,7 +364,7 @@ export async function rescheduleDelivery(
 	ctx: OperationContext,
 	userId: string,
 	id: string,
-	input: { runAt?: unknown }
+	body: unknown
 ) {
 	const target = await first(ctx.db.select().from(publishTargets).where(eq(publishTargets.id, id)));
 	if (!target) invalid('Not found', 404);
@@ -370,6 +374,8 @@ export async function rescheduleDelivery(
 	const blocked = refuseInFlightOrPublished(target, now);
 	if (blocked) invalid(blocked, 409);
 	if (target.status === 'cancelled') invalid('Cancelled — retry instead');
+	if (!body || typeof body !== 'object') invalid('Invalid JSON body');
+	const input = body as { runAt?: unknown };
 	const runAt = input.runAt ? new Date(input.runAt as string) : null;
 	const problem = runAtError(input.runAt, now);
 	if (problem) invalid(problem);
@@ -486,7 +492,7 @@ export async function listDrafts(ctx: OperationContext, userId: string, requeste
 		drafts: page.map((draft) =>
 			serializeDraft(draft, {
 				variants: variantsByDraft.get(draft.id) ?? [],
-				media: (mediaByDraft.get(draft.id) ?? []).sort((a, b) => a.sortOrder - b.sortOrder),
+				media: mediaByDraft.get(draft.id) ?? [],
 				targets: targetsByDraft.get(draft.id) ?? []
 			})
 		),
