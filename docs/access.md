@@ -6,8 +6,20 @@ secrets: `APP_ENCRYPTION_KEY` still encrypts your provider tokens and derives
 the key that signs publish-time media URLs, and `AUTH_SECRET` still signs
 sessions and OAuth state.
 
-If you enable Access (Workers → your Worker → **Access**, or the `workers.dev`
-one-click), account for these paths and clients:
+## Turning it on
+
+Workers → your Worker → **Access**, or the `workers.dev` one-click. On
+`workers.dev` it is set up through that Workers dashboard flow, because the Zero
+Trust domain picker only lists domains from a zone.
+
+Access requires Zero Trust to be enabled, which asks for payment details even
+on the free plan (50 users; service tokens do not consume seats). An account-wide
+**Protect all Workers** setting applies to new deployments too and needs the
+same exemptions as below.
+
+## The paths it has to let through
+
+Four things need exemptions or they break:
 
 - **Media for Meta's crawler.** `/api/media/public/*` must stay reachable
   without a login, or Threads and Mastodon cannot fetch images. Add a separate
@@ -43,18 +55,15 @@ one-click), account for these paths and clients:
   behind a policy that requires them. If your MCP client cannot send custom
   headers, choose an Access policy deliberately: use a client that supports
   Service Auth, or consider a narrowly scoped bypass for `/api/mcp` only if you
-  accept that Access will not authenticate those requests.
-  CogSend's personal-key authentication remains required either way. Do not
-  bypass Access for the whole instance as a workaround.
+  accept that Access will not authenticate those requests. CogSend's personal-key
+  authentication remains required either way. Do not bypass Access for the whole
+  instance as a workaround.
 
 - **OAuth callbacks.** If a provider redirects back while your Access session
   has expired, Access intercepts it before the app sees the code. Bypass
   `/api/connections/*/callback` if that happens.
 
+## What keeps working
+
 The cron trigger is unaffected: the scheduled handler calls the Worker
-in-process, never over HTTP. Access also requires Zero Trust to be enabled,
-which asks for payment details even on the free plan (50 users; service tokens
-do not consume seats). On `workers.dev`, set it up through the Workers dashboard
-flow because the Zero Trust domain picker only lists domains from a zone. An
-account-wide **Protect all Workers** setting applies to new deployments too and
-needs the same exemptions.
+in-process, never over HTTP.

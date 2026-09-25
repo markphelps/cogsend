@@ -72,8 +72,7 @@ scan the QR with an authenticator app — and save the backup codes.
 
 It is safe to re-run: resources, secrets and the account are reused, not replaced.
 `npm run setup -- --dry-run` prints the plan without changing anything, and
-[docs/deploy.md](docs/deploy.md#what-setup-does-command-by-command) lists every
-command it runs. Lost the password or the authenticator later?
+[docs/deploy.md](docs/deploy.md#one-command) lists what it does and every flag. Lost the password or the authenticator later?
 `npm run admin:reset -- --all` from your checkout
 ([Configuration → The login](docs/configuration.md#the-login)).
 
@@ -91,15 +90,23 @@ release tags and rolling back.
 
 ## Documentation
 
-| Page                                   | What is in it                                                                                                       |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| [Deploying](docs/deploy.md)            | the install, what it does command by command, domains and URLs, updating and rolling back, backups, troubleshooting |
-| [Configuration](docs/configuration.md) | secrets, the instance name, `APP_URL`, keeping your deployment separate from upstream, the login and recovery       |
-| [OAuth apps](docs/oauth-apps.md)       | LinkedIn, Threads and X app setup, and what each platform allows                                                    |
-| [Scheduling](docs/scheduling.md)       | the cron trigger, the free-plan trigger limit, external pingers, failure emails                                     |
-| [API](docs/api.md)                     | personal API keys, MCP/Inspector setup, tool scopes, and worked API examples (also in-app at `/api`)                |
-| [Cloudflare Access](docs/access.md)    | putting an extra gate in front of an instance                                                                       |
-| [Development](docs/development.md)     | local setup, the checks that must pass, code expectations                                                           |
+Also published, with search, at [cogsend.com/docs](https://cogsend.com/docs/).
+
+| Page                                       | What is in it                                                                                                 |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| [Deploying](docs/deploy.md)                | the install and its flags, checking it worked, updating and rolling back, deploying by hand                   |
+| [Configuration](docs/configuration.md)     | secrets, the instance name, `APP_URL`, keeping your deployment separate from upstream, the login and recovery |
+| [OAuth apps](docs/oauth-apps.md)           | LinkedIn, Threads and X app setup, and what each platform allows                                              |
+| [Cloudflare Access](docs/access.md)        | putting an extra gate in front of an instance                                                                 |
+| [Domains and URLs](docs/domains.md)        | the workers.dev URL, a custom domain, and what to update when the hostname changes                            |
+| [Writing and publishing](docs/composer.md) | the composer: threads, overrides, images and alt text, publishing and scheduling                              |
+| [Posts and Insights](docs/posts.md)        | the queue and what each post can do, and the delivery stats                                                   |
+| [Connecting accounts](docs/accounts.md)    | connecting, reconnecting and disconnecting accounts                                                           |
+| [Scheduling](docs/scheduling.md)           | the cron trigger, the free-plan trigger limit, external pingers, failure emails                               |
+| [API](docs/api.md)                         | personal API keys, MCP/Inspector setup, tool scopes, worked examples, and the in-app reference                |
+| [Backups](docs/backups.md)                 | D1 Time Travel, exporting the database, copying the bucket                                                    |
+| [Troubleshooting](docs/troubleshooting.md) | the errors people actually hit, and what fixes each                                                           |
+| [Development](docs/development.md)         | local setup, the checks that must pass, code expectations                                                     |
 
 ## Stack
 

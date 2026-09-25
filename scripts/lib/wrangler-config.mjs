@@ -215,7 +215,7 @@ export function cronFallbackWarning() {
 		'         Scheduled publishing shows the tick URL and a token to paste into',
 		'         any cron service (cron-job.org, UptimeRobot, GitHub Actions).',
 		'',
-		'    See docs/deploy.md -> "The deploy complains about cron triggers (10072)".',
+		'    See docs/troubleshooting.md -> "The deploy complains about cron triggers (10072)".',
 		''
 	].join('\n');
 }

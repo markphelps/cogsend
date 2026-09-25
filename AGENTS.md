@@ -36,6 +36,14 @@ Local setup, the seeded account and `SKIP_TOTP` live in [docs/development.md](do
 
 The e2e suite is one serial journey, not independent tests, so a single spec run with `-g` proves nothing about that spec.
 
+## The docs are also the website
+
+`docs/` is published at https://cogsend.com/docs/ by the website repo (github.com/deepakness/cogsend-website), which copies these files at build time. The words stay here; the website owns the sidebar, page titles and site-only additions such as screenshots.
+
+- A new file in `docs/` needs an entry in the website's `src/docs/nav.mjs`, or the website build fails. Say so when you add one.
+- The website pins additions to these headings, so renaming one breaks its build: `One command` (deploy.md), `Secrets` (configuration.md), `How a tick works` (scheduling.md), `Examples` (api.md), `Insights` (posts.md). Renaming a doc file or any other heading is fine, as long as links inside `docs/` still resolve.
+- Keep links between docs relative (`scheduling.md#cadence`); the website rewrites them into its own URLs.
+
 ## Commits and pull requests
 
 - Before finishing a change, check whether `README.md`, `docs/` or `AGENTS.md` has gone stale because of it, and ask whether to update them. Do not update the docs silently, and do not skip the check.

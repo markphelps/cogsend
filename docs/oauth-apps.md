@@ -82,7 +82,7 @@ Posting on X uses pay-per-use API credits — fund a small balance in the consol
 first.
 
 Moving your instance to another hostname means registering these redirect URIs
-again; see [Domains and URLs](deploy.md#domains-and-urls).
+again; see [Domains and URLs](domains.md).
 
 Without these, those three platforms are listed in the accounts dialog with a
 **Needs setup** badge. Picking one shows that platform's own steps — the redirect

@@ -113,7 +113,10 @@ describe('recorded state', () => {
 	});
 
 	it('points at a real doc section', () => {
-		expect(cronFallbackWarning()).toContain('docs/deploy.md');
+		expect(cronFallbackWarning()).toContain('docs/troubleshooting.md');
+		expect(readFileSync('docs/troubleshooting.md', 'utf8')).toContain(
+			'## The deploy complains about cron triggers (10072)'
+		);
 		expect(cronFallbackWarning()).toContain('10072');
 	});
 });

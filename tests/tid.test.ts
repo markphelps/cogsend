@@ -36,11 +36,25 @@ describe('targetRecordKey', () => {
 		expect(targetRecordKey('t-1', created, 0)).toMatch(TID_RE);
 	});
 
-	it('differs per segment and per target, even within one millisecond', () => {
+	it('differs per segment, so every post of a thread gets its own key', () => {
 		const keys = new Set<string>();
 		for (let i = 0; i < 150; i++) keys.add(targetRecordKey('t-1', created, i));
 		expect(keys.size).toBe(150);
-		const ids = Array.from({ length: 500 }, () => crypto.randomUUID());
+	});
+
+	// Fixed ids, not `crypto.randomUUID()`: a key is ~20 bits per millisecond,
+	// so 500 random ids in one millisecond collide on a real share of runs (the
+	// birthday bound), and the test flaked. That many is not a case that exists —
+	// keys are per repository, and a draft makes one target per account — and the
+	// key cannot simply be widened: it is recomputed on every retry, so changing
+	// the derivation would re-key targets mid-retry and let Bluesky accept a
+	// second copy. Two targets on one account in one millisecond collide about
+	// once in 100,000, which is what the derivation is sized for.
+	it('differs per target within one millisecond', () => {
+		const ids = Array.from(
+			{ length: 200 },
+			(_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+		);
 		const perTarget = new Set(ids.map((id) => targetRecordKey(id, created, 0)));
 		expect(perTarget.size).toBe(ids.length);
 	});

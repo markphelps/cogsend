@@ -76,7 +76,7 @@ app uses the origin each request arrives on and remembers the first authenticate
 one, which is how a deployment works without knowing its URL in advance. Set it to
 pin a deliberate origin — a custom domain, or the hostname OAuth redirect URIs and
 signed media URLs must use. A pinned value does not follow a hostname change, so
-update it if you move — [Domains and URLs](deploy.md#domains-and-urls) has the
+update it if you move — [Domains and URLs](domains.md) has the
 steps, and the redirect URIs that go with them.
 
 ## Faster post thumbnails

@@ -43,12 +43,13 @@ curl -X POST "$APP_URL/api/internal/tick" \
   -H "Content-Type: application/json"
 ```
 
-Both headers matter. The endpoint takes `SCHEDULER_SECRET` (`API_TOKEN` still
-works as a fallback; `AUTH_SECRET` never does — it signs sessions and is rejected
-on the wire), and `Content-Type: application/json` is required because
-SvelteKit's built-in CSRF guard rejects form-encoded POSTs without an `Origin`
-header (403) before app code ever runs. Clients that default to a form content
-type must override it.
+The endpoint takes `SCHEDULER_SECRET` (`API_TOKEN` still works as a fallback;
+`AUTH_SECRET` never does — it signs sessions and is rejected on the wire). Keep
+`Content-Type: application/json` too: SvelteKit's built-in CSRF guard answers 403,
+before app code ever runs, to a POST that arrives with a form content type
+(`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`) and no
+matching `Origin`. A bare `curl -X POST` sends no content type and gets through,
+but many cron services default to a form type, so set the header explicitly.
 
 An external caller needs a bearer it can read. Easiest is the token from
 **Settings → Scheduled publishing**, which needs no redeploy and cannot reach
@@ -59,7 +60,8 @@ the pinger's config — so rotate both together. Without one of those (or
 keeps working either way, because the Worker derives the same value.
 
 The bundled GitHub workflow (`.github/workflows/scheduler-tick.yml`) stays off
-until you set repository secrets `APP_URL` and `SCHEDULER_SECRET`. With the
+until you set repository secrets `APP_URL` and `SCHEDULER_SECRET` — the token
+from **Settings → Scheduled publishing** works as that `SCHEDULER_SECRET` value. With the
 built-in cron running, treat it as a backup rather than the primary tick: it is
 scheduled every five minutes (GitHub's shortest interval) but GitHub throttles it
 to roughly one run every two hours. You can also run it by hand from

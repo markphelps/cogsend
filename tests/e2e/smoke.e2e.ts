@@ -1138,10 +1138,11 @@ test('posts account dropdown filters the feed', async () => {
 	await page.goto('/posts?tab=published');
 	const trigger = page.getByRole('button', { name: 'Filter posts by account' });
 	await expect(trigger).toBeVisible();
-	await trigger.click();
 	// Bluesky handles drop the .bsky.social suffix in labels.
 	const option = page.getByRole('menuitemradio', { name: 'filtered' });
-	await expect(option).toBeVisible();
+	// The trigger is server-rendered, so it is visible before Svelte hydrates and
+	// a bare click can be lost (see clickUntilVisible in tests/e2e/e2e-env.ts).
+	await clickUntilVisible(page, trigger, option);
 	await option.click();
 	await expect(trigger).toContainText('filtered');
 	await expect(page.getByText('dropdown probe')).toBeVisible();

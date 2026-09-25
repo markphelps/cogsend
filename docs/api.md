@@ -152,7 +152,7 @@ store mechanism:
 }
 ```
 
-## REST API examples
+## Examples
 
 Create a draft, then publish it to one account:
 
